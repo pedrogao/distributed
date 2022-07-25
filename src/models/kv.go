@@ -1,8 +1,11 @@
 package models
 
-import "6.824/porcupine"
-import "fmt"
-import "sort"
+import (
+	"fmt"
+	"sort"
+
+	"pedrogao/distributed/porcupine"
+)
 
 type KvInput struct {
 	Op    uint8 // 0 => get, 1 => put, 2 => append
@@ -32,12 +35,12 @@ var KvModel = porcupine.Model{
 		}
 		return ret
 	},
-	Init: func() interface{} {
+	Init: func() any {
 		// note: we are modeling a single key's value here;
 		// we're partitioning by key, so this is okay
 		return ""
 	},
-	Step: func(state, input, output interface{}) (bool, interface{}) {
+	Step: func(state, input, output any) (bool, any) {
 		inp := input.(KvInput)
 		out := output.(KvOutput)
 		st := state.(string)
@@ -49,10 +52,10 @@ var KvModel = porcupine.Model{
 			return true, inp.Value
 		} else {
 			// append
-			return true, (st + inp.Value)
+			return true, st + inp.Value
 		}
 	},
-	DescribeOperation: func(input, output interface{}) string {
+	DescribeOperation: func(input, output any) string {
 		inp := input.(KvInput)
 		out := output.(KvOutput)
 		switch inp.Op {

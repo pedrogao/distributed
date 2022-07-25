@@ -1,17 +1,20 @@
 package shardctrler
 
-import "6.824/labrpc"
-import "6.824/raft"
-import "testing"
-import "os"
+import (
+	crand "crypto/rand"
+	"encoding/base64"
+	"math/rand"
+	"os"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"pedrogao/distributed/labrpc"
+	"pedrogao/distributed/raft"
+)
 
 // import "log"
-import crand "crypto/rand"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "time"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -63,7 +66,7 @@ func (cfg *config) cleanup() {
 	cfg.checkTimeout()
 }
 
-// Maximum log size across all servers
+// LogSize Maximum log size across all servers
 func (cfg *config) LogSize() int {
 	logsize := 0
 	for i := 0; i < cfg.n; i++ {
@@ -192,7 +195,7 @@ func (cfg *config) deleteClient(ck *Clerk) {
 	delete(cfg.clerks, ck)
 }
 
-// caller should hold cfg.mu
+// ConnectClientUnlocked caller should hold cfg.mu
 func (cfg *config) ConnectClientUnlocked(ck *Clerk, to []int) {
 	// log.Printf("ConnectClient %v to %v\n", ck, to)
 	endnames := cfg.clerks[ck]
@@ -208,7 +211,7 @@ func (cfg *config) ConnectClient(ck *Clerk, to []int) {
 	cfg.ConnectClientUnlocked(ck, to)
 }
 
-// caller should hold cfg.mu
+// DisconnectClientUnlocked caller should hold cfg.mu
 func (cfg *config) DisconnectClientUnlocked(ck *Clerk, from []int) {
 	// log.Printf("DisconnectClient %v from %v\n", ck, from)
 	endnames := cfg.clerks[ck]
@@ -224,7 +227,7 @@ func (cfg *config) DisconnectClient(ck *Clerk, from []int) {
 	cfg.DisconnectClientUnlocked(ck, from)
 }
 
-// Shutdown a server by isolating it
+// ShutdownServer Shutdown a server by isolating it
 func (cfg *config) ShutdownServer(i int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -256,7 +259,7 @@ func (cfg *config) ShutdownServer(i int) {
 	}
 }
 
-// If restart servers, first call ShutdownServer
+// StartServer If restart servers, first call ShutdownServer
 func (cfg *config) StartServer(i int) {
 	cfg.mu.Lock()
 

@@ -1,0 +1,37 @@
+digraph G {
+
+	subgraph worker {
+		style=filled;
+		color=lightgrey;
+		node [style=filled,color=white];
+		wmain -> loadPlugin -> Worker -> CallTask;
+		CallTask -> doMap  [label="MapTask"];
+		doMap -> CallFinishMap;
+		CallTask -> doReduce  [label="ReduceTask"];
+		doReduce -> CallFinishReduce;
+		CallTask -> exit  [label="Done reply"];
+		label = "worker";
+	}
+
+	subgraph coordinator {
+		node [style=filled];
+		cmain -> MakeCoordinator -> server -> Serve;
+		Serve -> Task [label="Listen for task"];
+		Serve -> FinishMap [label="Listen for FinishMap"];
+		Serve -> FinishReduce [label="Listen for FinishReduce"];
+		Serve -> Done [label ="All task finished"];
+		label = "coordinator";
+		color=blue
+	}
+
+	start -> wmain;
+	start -> cmain;
+	CallTask -> Task;
+	CallFinishMap -> FinishMap;
+	CallFinishReduce -> FinishReduce;
+	exit -> end;
+	Done -> end;
+
+	start [shape=Mdiamond];
+	end [shape=Msquare];
+}

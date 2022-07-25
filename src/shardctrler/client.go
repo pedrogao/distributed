@@ -4,10 +4,13 @@ package shardctrler
 // Shardctrler clerk.
 //
 
-import "6.824/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+
+	"pedrogao/distributed/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd

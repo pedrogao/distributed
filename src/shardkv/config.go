@@ -1,21 +1,24 @@
 package shardkv
 
-import "6.824/shardctrler"
-import "6.824/labrpc"
-import "testing"
-import "os"
+import (
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"math/rand"
+	"os"
+	"runtime"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"pedrogao/distributed/labrpc"
+	"pedrogao/distributed/raft"
+	"pedrogao/distributed/shardctrler"
+)
 
 // import "log"
-import crand "crypto/rand"
-import "math/big"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "6.824/raft"
-import "strconv"
-import "fmt"
-import "time"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -200,7 +203,7 @@ func (cfg *config) ShutdownGroup(gi int) {
 	}
 }
 
-// start i'th server in gi'th group
+// StartServer start i'th server in gi'th group
 func (cfg *config) StartServer(gi int, i int) {
 	cfg.mu.Lock()
 
@@ -333,10 +336,10 @@ func (cfg *config) leavem(gis []int) {
 	cfg.mck.Leave(gids)
 }
 
-var ncpu_once sync.Once
+var ncpuOnce sync.Once
 
 func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config {
-	ncpu_once.Do(func() {
+	ncpuOnce.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
 		}

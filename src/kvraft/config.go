@@ -1,20 +1,23 @@
 package kvraft
 
-import "6.824/labrpc"
-import "testing"
-import "os"
+import (
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"math/rand"
+	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"pedrogao/distributed/labrpc"
+	"pedrogao/distributed/raft"
+)
 
 // import "log"
-import crand "crypto/rand"
-import "math/big"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "6.824/raft"
-import "fmt"
-import "time"
-import "sync/atomic"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -78,7 +81,7 @@ func (cfg *config) cleanup() {
 	cfg.checkTimeout()
 }
 
-// Maximum log size across all servers
+// LogSize Maximum log size across all servers
 func (cfg *config) LogSize() int {
 	logsize := 0
 	for i := 0; i < cfg.n; i++ {
@@ -90,7 +93,7 @@ func (cfg *config) LogSize() int {
 	return logsize
 }
 
-// Maximum snapshot size across all servers
+// SnapshotSize Maximum snapshot size across all servers
 func (cfg *config) SnapshotSize() int {
 	snapshotsize := 0
 	for i := 0; i < cfg.n; i++ {
@@ -219,7 +222,7 @@ func (cfg *config) deleteClient(ck *Clerk) {
 	delete(cfg.clerks, ck)
 }
 
-// caller should hold cfg.mu
+// ConnectClientUnlocked caller should hold cfg.mu
 func (cfg *config) ConnectClientUnlocked(ck *Clerk, to []int) {
 	// log.Printf("ConnectClient %v to %v\n", ck, to)
 	endnames := cfg.clerks[ck]
@@ -235,7 +238,7 @@ func (cfg *config) ConnectClient(ck *Clerk, to []int) {
 	cfg.ConnectClientUnlocked(ck, to)
 }
 
-// caller should hold cfg.mu
+// DisconnectClientUnlocked caller should hold cfg.mu
 func (cfg *config) DisconnectClientUnlocked(ck *Clerk, from []int) {
 	// log.Printf("DisconnectClient %v from %v\n", ck, from)
 	endnames := cfg.clerks[ck]
@@ -251,7 +254,7 @@ func (cfg *config) DisconnectClient(ck *Clerk, from []int) {
 	cfg.DisconnectClientUnlocked(ck, from)
 }
 
-// Shutdown a server by isolating it
+// ShutdownServer Shutdown a server by isolating it
 func (cfg *config) ShutdownServer(i int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -283,7 +286,7 @@ func (cfg *config) ShutdownServer(i int) {
 	}
 }
 
-// If restart servers, first call ShutdownServer
+// StartServer If restart servers, first call ShutdownServer
 func (cfg *config) StartServer(i int) {
 	cfg.mu.Lock()
 
@@ -327,8 +330,8 @@ func (cfg *config) Leader() (bool, int) {
 	defer cfg.mu.Unlock()
 
 	for i := 0; i < cfg.n; i++ {
-		_, is_leader := cfg.kvservers[i].rf.GetState()
-		if is_leader {
+		_, isLeader := cfg.kvservers[i].rf.GetState()
+		if isLeader {
 			return true, i
 		}
 	}
@@ -355,10 +358,10 @@ func (cfg *config) make_partition() ([]int, []int) {
 	return p1, p2
 }
 
-var ncpu_once sync.Once
+var ncpuOnce sync.Once
 
 func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config {
-	ncpu_once.Do(func() {
+	ncpuOnce.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
 		}

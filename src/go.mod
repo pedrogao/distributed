@@ -1,3 +1,3 @@
-module 6.824
+module pedrogao/distributed
 
-go 1.15
+go 1.18

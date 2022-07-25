@@ -1,11 +1,12 @@
 package shardctrler
 
+import (
+	"sync"
 
-import "6.824/raft"
-import "6.824/labrpc"
-import "sync"
-import "6.824/labgob"
-
+	"pedrogao/distributed/labgob"
+	"pedrogao/distributed/labrpc"
+	"pedrogao/distributed/raft"
+)
 
 type ShardCtrler struct {
 	mu      sync.Mutex
@@ -18,11 +19,9 @@ type ShardCtrler struct {
 	configs []Config // indexed by config num
 }
 
-
 type Op struct {
 	// Your data here.
 }
-
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
@@ -40,8 +39,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 }
 
-
-//
+// Kill
 // the tester calls Kill() when a ShardCtrler instance won't
 // be needed again. you are not required to do anything
 // in Kill(), but it might be convenient to (for example)
@@ -57,7 +55,7 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 	return sc.rf
 }
 
-//
+// StartServer
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant shardctrler service.
