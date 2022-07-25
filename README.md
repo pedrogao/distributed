@@ -1,18 +1,18 @@
 # distributed(MIT 6.824)
 
-> learn & practice distributed system
+> learn & practice distributed system  
 > 开大坑，艰难学习中...
 
 ## modules
 
--[rpc](./src/labrpc)
--[gob](./src/labgob)
--[mapreduce](./src/mr)
--[paxos](./src/paxos)
--[primary-backup](./src/pbservice)
--[view](./src/viewservice)
--[raft](./src/raft)
--[kv raft](./src/kvraft)
+-[rpc](./src/labrpc)   
+-[gob](./src/labgob)  
+-[mapreduce](./src/mr)  
+-[paxos](./src/paxos)  
+-[primary-backup](./src/pbservice)  
+-[view](./src/viewservice)  
+-[raft](./src/raft)  
+-[kv raft](./src/kvraft)  
 -[shared kv raft](./src/shardkv)
 
 ## reference
