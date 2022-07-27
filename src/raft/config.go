@@ -646,7 +646,7 @@ func (cfg *config) end() {
 	}
 }
 
-// Maximum log size across all servers
+// LogSize Maximum log size across all servers
 func (cfg *config) LogSize() int {
 	logsize := 0
 	for i := 0; i < cfg.n; i++ {

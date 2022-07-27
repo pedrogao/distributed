@@ -23,3 +23,6 @@ ok      6.824/raft      14.221s
 
 注意：一定要加上 -race 来测试并发数据竞争冲突！
 
+## 参考资料
+
+- [目前为止见过最好的Raft算法实现剖析 6.2 The Raft consensus algorithm](https://www.cl.cam.ac.uk/teaching/2122/ConcDisSys/dist-sys-notes.pdf)
