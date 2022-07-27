@@ -9,11 +9,11 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"plugin"
 	"sort"
 
+	"github.com/pedrogao/log"
 	"pedrogao/distributed/mr"
 )
 
@@ -41,6 +41,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 	mapf, reducef := loadPlugin(os.Args[1])
 
 	//

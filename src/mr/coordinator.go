@@ -2,7 +2,6 @@ package mr
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pedrogao/log"
 )
 
 type Coordinator struct {
@@ -25,6 +26,8 @@ type Coordinator struct {
 	reduceFiles map[int][]string
 	mapFiles    map[int]string
 
+	mapTaskQueue    chan int
+	reduceTaskQueue chan int
 	// mapTaskNumber    int
 	// reduceTaskNumber int
 
@@ -35,25 +38,30 @@ type Coordinator struct {
 
 func (c *Coordinator) RequestTask(args *RequestTaskArgs,
 	reply *RequestTaskReply) error {
-	log.Printf("handle RequestTask")
+	log.Infof("handle RequestTask")
 	// 派发任务
 	if c.Done() {
-		return fmt.Errorf("all tasks done")
+		reply.Done = true
+		return nil
 	}
+	log.Infof("dispatch task start")
 	dispatchMap := !c.isAllMapTasksDone()
 	// 派发 Map 任务
 	if dispatchMap {
+		log.Infof("dispatch map task start")
 		c.mu.Lock()
-		for number, ok := range c.mapTasks {
-			if !ok {
+		select { // 注意：使用 select，如果 mapTaskQueue 元素都被推出，但是又没有推入，那么就会陷入阻塞
+		case number, ok := <-c.mapTaskQueue:
+			log.Infof("dispatch map task %d, %v", number, ok)
+			if ok {
 				reply.TaskType = MapTask
 				reply.Filepath = c.mapFiles[number]
 				reply.NReduce = c.nReduce
 				reply.Number = number
-				log.Printf("dispatch map task: %v", *reply)
+				log.Infof("dispatch map task: %v", *reply)
 				go c.monitorTask(reply)
-				break
 			}
+		default:
 		}
 		c.mu.Unlock()
 		return nil
@@ -61,38 +69,46 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs,
 	// 派发 Reduce 任务
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	for number, ok := range c.reduceTasks {
-		if !ok {
+	log.Infof("dispatch reduce task start")
+	select {
+	case number, ok := <-c.reduceTaskQueue:
+		log.Infof("dispatch reduce task %d, %v", number, ok)
+		if ok {
 			reply.TaskType = ReduceTask
 			reply.InterFiles = c.reduceFiles[number]
 			reply.NReduce = c.nReduce
 			reply.Number = number
-			log.Printf("dispatch reduce task: %v", *reply)
+			log.Infof("dispatch reduce task: %v", *reply)
 			go c.monitorTask(reply)
-			break
 		}
+	default:
 	}
 	return nil
 }
 
 func (c *Coordinator) monitorTask(reply *RequestTaskReply) {
 	// 监控任务完成，如果超过10s，则重新发布任务
-	var taskMap map[int]bool
+	var (
+		taskQueue chan int
+		taskMap   map[int]bool
+	)
 	if reply.TaskType == MapTask {
+		taskQueue = c.mapTaskQueue
 		taskMap = c.mapTasks
 	} else {
+		taskQueue = c.reduceTaskQueue
 		taskMap = c.reduceTasks
 	}
-	t := time.NewTicker(time.Second * 10)
+	t := time.NewTimer(time.Second * 10)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
 			// 超时
 			c.mu.Lock()
-			taskMap[reply.Number] = false // 超时后再次设置为 false
+			taskQueue <- reply.Number // 超时后再次设置为 false
 			c.mu.Unlock()
+			return
 		default:
 			c.mu.Lock()
 			if taskMap[reply.Number] { // 如果完成了，直接返回
@@ -100,6 +116,7 @@ func (c *Coordinator) monitorTask(reply *RequestTaskReply) {
 				return
 			}
 			c.mu.Unlock()
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
@@ -137,7 +154,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs,
 		if done {
 			return fmt.Errorf("reduce task: %d is already done", number)
 		}
-		log.Printf("finish reduce task: %v", *args)
+		log.Infof("finish reduce task: %v", *args)
 		c.reduceTasks[number] = true
 	case MapTask:
 		// worker 已完成 map 任务
@@ -151,7 +168,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs,
 			return fmt.Errorf("map task: %d is already done", number)
 		}
 		c.mapTasks[number] = true
-		log.Printf("finish map task: %v", *args)
+		log.Infof("finish map task: %v", *args)
 		for _, interFile := range args.InterFiles {
 			i := strings.LastIndexByte(interFile, '-')
 			n, err := strconv.ParseInt(interFile[i+1:], 10, 64)
@@ -160,7 +177,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs,
 			}
 			c.reduceFiles[int(n)] = append(c.reduceFiles[int(n)], interFile)
 		}
-		log.Printf("reduceFiles: %v", c.reduceFiles)
+		log.Infof("reduceFiles: %v", c.reduceFiles)
 	default:
 		return fmt.Errorf("invalid task tyoe")
 	}
@@ -213,29 +230,35 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// 注意：nReduce 表示 reduce 任务数不能超过 nReduce 的个数，但 map 任务无限制
 	mapTasks := map[int]bool{}
 	mapFiles := map[int]string{}
+	mapTaskQueue := make(chan int, len(files))
 	// 待 map 完成后再填充 reduceJobs
 	for i, file := range files {
 		mapTasks[i] = false
 		mapFiles[i] = file
+		mapTaskQueue <- i
 	}
 
 	reduceFiles := map[int][]string{}
 	reduceTasks := map[int]bool{}
+	reduceTaskQueue := make(chan int, nReduce)
 	for i := 0; i < nReduce; i++ {
 		reduceTasks[i] = false
 		reduceFiles[i] = []string{}
+		reduceTaskQueue <- i
 	}
-	log.Printf("mapFiles: %v", mapFiles)
-	log.Printf("reduceFiles: %v", reduceFiles)
+	log.Infof("mapFiles: %v", mapFiles)
+	log.Infof("reduceFiles: %v", reduceFiles)
 	c := Coordinator{
-		nReduce:     nReduce,
-		curReduce:   0,
-		inputFiles:  files,
-		mapTasks:    mapTasks,
-		mapFiles:    mapFiles,
-		reduceTasks: reduceTasks,
-		reduceFiles: reduceFiles,
-		mu:          sync.Mutex{},
+		nReduce:         nReduce,
+		curReduce:       0,
+		inputFiles:      files,
+		mapTasks:        mapTasks,
+		mapFiles:        mapFiles,
+		mapTaskQueue:    mapTaskQueue,
+		reduceTaskQueue: reduceTaskQueue,
+		reduceTasks:     reduceTasks,
+		reduceFiles:     reduceFiles,
+		mu:              sync.Mutex{},
 	}
 
 	c.server()

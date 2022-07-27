@@ -14,6 +14,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pedrogao/log"
 	"pedrogao/distributed/mr"
 )
 
@@ -22,6 +23,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: mrcoordinator inputfiles...\n")
 		os.Exit(1)
 	}
+
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 
 	m := mr.MakeCoordinator(os.Args[1:], 10)
 	for m.Done() == false {

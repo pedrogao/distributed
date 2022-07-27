@@ -12,10 +12,10 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"plugin"
 
+	"github.com/pedrogao/log"
 	"pedrogao/distributed/mr"
 )
 
@@ -26,7 +26,7 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 	mr.Worker(mapf, reducef)
 }
 

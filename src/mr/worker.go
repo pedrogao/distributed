@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
-	"log"
 	"net/rpc"
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/pedrogao/log"
 )
 
 // KeyValue
@@ -43,19 +44,24 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 	// 请求任务
 	for {
-		log.Printf("try call task")
+		log.Infof("try call task")
 		taskReply, err := CallRequestTask()
 		if err != nil {
-			log.Fatal("CallRequestTask err: ", err)
+			log.Errorf("CallRequestTask err: %v", err)
+			continue
 		}
-		log.Printf("call task: %v", *taskReply)
+		if taskReply.Done {
+			log.Infof("all tasks done")
+			return
+		}
+		log.Infof("call task: %v", *taskReply)
 		switch taskReply.TaskType {
 		case MapTask:
 			doMapTask(taskReply, mapf)
 		case ReduceTask:
 			doReduceTask(taskReply, reducef)
 		default:
-			log.Fatalf("invalid task: %s", taskReply.TaskType)
+			log.Infof("invalid task: %s", taskReply.TaskType)
 		}
 	}
 }
@@ -133,7 +139,7 @@ func doReduceTask(reply *RequestTaskReply, reducef func(string, []string) string
 
 func doMapTask(reply *RequestTaskReply, mapf func(string, string) []KeyValue) {
 	filepath := reply.Filepath
-	log.Printf("do map task: %s", filepath)
+	log.Infof("do map task: %s", filepath)
 	file, err := os.Open(filepath)
 	if err != nil {
 		log.Fatalf("cannot open %v", filepath)
@@ -196,10 +202,9 @@ func CallRequestTask() (*RequestTaskReply, error) {
 	reply := RequestTaskReply{}
 	ok := call("Coordinator.RequestTask", &args, &reply)
 	if ok {
-		log.Printf("%v\n", reply)
+		log.Infof("%v\n", reply)
 		return &reply, nil
 	}
-	log.Printf("call RequestTask failed!\n")
 	return nil, fmt.Errorf("call RequestTask failed")
 }
 
@@ -208,9 +213,9 @@ func CallFinishTask(args *FinishTaskArgs) {
 	reply := FinishTaskReply{}
 	ok := call("Coordinator.FinishTask", args, &reply)
 	if ok {
-		log.Printf("%v\n", reply)
+		log.Infof("%v\n", reply)
 	} else {
-		log.Printf("call FinishTask failed!\n")
+		log.Errorf("call FinishTask failed!\n")
 	}
 }
 
@@ -236,9 +241,9 @@ func CallExample() {
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
-		log.Printf("reply.Y %v\n", reply.Y)
+		log.Infof("reply.Y %v\n", reply.Y)
 	} else {
-		log.Printf("call failed!\n")
+		log.Infof("call failed!\n")
 	}
 }
 
@@ -259,6 +264,6 @@ func call(rpcName string, args any, reply any) bool {
 		return true
 	}
 
-	log.Println(err)
+	log.Errorf("call %s err: %v", rpcName, err)
 	return false
 }

@@ -44,6 +44,7 @@ type RequestTaskReply struct {
 	InterFiles []string // reduce任务中间文件
 	NReduce    int      // reduce个数
 	Number     int      // 任务序号
+	Done       bool     // 所有任务已经完成
 }
 
 //

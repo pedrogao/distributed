@@ -5,15 +5,16 @@
 
 ## modules
 
--[rpc](./src/labrpc)   
--[gob](./src/labgob)  
--[mapreduce](./src/mr)  
--[paxos](./src/paxos)  
--[primary-backup](./src/pbservice)  
--[view](./src/viewservice)  
--[raft](./src/raft)  
--[kv raft](./src/kvraft)  
--[shared kv raft](./src/shardkv)
+- [log](./log)   
+- [rpc](./src/labrpc)   
+- [gob](./src/labgob)  
+- [mapreduce](./src/mr)  
+- [paxos](./src/paxos)  
+- [primary-backup](./src/pbservice)  
+- [view](./src/viewservice)  
+- [raft](./src/raft)  
+- [kv raft](./src/kvraft)  
+- [shared kv raft](./src/shardkv)
 
 ## reference
 
