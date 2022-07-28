@@ -71,13 +71,16 @@ type options struct {
 	stdLevel      Level
 	formatter     Formatter
 	disableCaller bool
+	skipLevel     int
 }
 
 // Option for logger
 type Option func(*options)
 
 func initOptions(opts ...Option) (o *options) {
-	o = &options{}
+	o = &options{
+		skipLevel: 3, // 默认 3
+	}
 
 	for _, opt := range opts {
 		opt(o)
@@ -109,6 +112,12 @@ func WithOutput(output io.Writer) Option {
 func WithFormatter(formatter Formatter) Option {
 	return func(o *options) {
 		o.formatter = formatter
+	}
+}
+
+func WithSkipLevel(skipLevel int) Option {
+	return func(o *options) {
+		o.skipLevel = skipLevel
 	}
 }
 

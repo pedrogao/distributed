@@ -22,7 +22,7 @@ func main() {
 
 	defer fd.Close()
 
-	l := log.New(log.WithLevel(log.InfoLevel), log.WithOutput(fd),
+	l := log.New(log.WithLevel(log.InfoLevel), log.WithOutput(fd), log.WithSkipLevel(2),
 		log.WithFormatter(&log.JsonFormatter{IgnoreBasicFields: false}))
 	l.Info("custom log with json formatter")
 }

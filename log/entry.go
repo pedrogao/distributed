@@ -9,23 +9,25 @@ import (
 
 // Entry store log information
 type Entry struct {
-	logger *logger
-	Buffer *bytes.Buffer
-	Map    map[string]any
-	Level  Level
-	Time   time.Time
-	File   string
-	Line   int
-	Func   string
-	Format string
-	Args   []any
+	logger    *logger
+	Buffer    *bytes.Buffer
+	Map       map[string]any
+	Level     Level
+	Time      time.Time
+	File      string
+	Line      int
+	Func      string
+	Format    string
+	Args      []any
+	SkipLevel int
 }
 
 func entry(logger *logger) *Entry {
 	return &Entry{
-		logger: logger,
-		Buffer: new(bytes.Buffer),
-		Map:    make(map[string]any, 5),
+		logger:    logger,
+		Buffer:    new(bytes.Buffer),
+		Map:       make(map[string]any, 5),
+		SkipLevel: logger.opts.skipLevel,
 	}
 }
 
@@ -38,7 +40,7 @@ func (e *Entry) write(level Level, format string, args ...any) {
 	e.Format = format
 	e.Args = args
 	if !e.logger.opts.disableCaller {
-		if pc, file, line, ok := runtime.Caller(3); !ok {
+		if pc, file, line, ok := runtime.Caller(e.SkipLevel); !ok {
 			e.File = "???"
 			e.Func = "???"
 		} else {

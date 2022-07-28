@@ -21,6 +21,7 @@ import (
 	//	"bytes"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	//	"pedrogao/distributed/labgob"
 	"pedrogao/distributed/labrpc"
@@ -49,6 +50,18 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type State string
+
+func (s State) String() string {
+	return string(s)
+}
+
+const (
+	Follower  State = "Follower"
+	Candidate State = "Candidate"
+	Leader    State = "Leader"
+)
+
 // Raft
 // A Go object implementing a single Raft peer.
 //
@@ -62,16 +75,22 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	state       State         // 节点状态
+	currentTerm int           // 当前任期
+	votedFor    int           // 给谁投过票
+	leaderId    int           // 集群 leader id
+	applyCh     chan ApplyMsg // apply message channel
 }
 
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	var term int
-	var isLeader bool
 	// Your code here (2A).
+	term := rf.currentTerm
+	isLeader := rf.leaderId == rf.me
 	return term, isLeader
 }
 
@@ -133,12 +152,44 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+type AppendEntriesArgs struct {
+	Term     int // leader 任期
+	LeaderId int // leader ID
+}
+
+type AppendEntriesReply struct {
+	Term    int  // 回复者任期
+	Success bool // 是否同步成功
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	// 发现任期小的，直接拒绝
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		return
+	}
+	rf.leaderId = args.LeaderId
+	reply.Success = true
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs,
+	reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
 // RequestVoteArgs
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term        int // 请求者任期
+	CandidateId int // 请求者Id
 }
 
 // RequestVoteReply
@@ -147,6 +198,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int  // 回复者任期，如果回复者任期高，那么请求者成为追随者
+	VoteGranted bool // 是否投票
 }
 
 // RequestVote
@@ -154,6 +207,26 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// 处理他人的请求投票
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	// 1. 判断任期
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		return
+	}
+	// 如果你的任期大，那么我就成为 Follower
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+	// 2. 判断任期是否可以投票，没有投过票，或者已经给请求者投过票，那么都可以投票
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId // 更新 votedFor
+	}
+	// 3. TODO 引入日志后还需判断日志的完整性
 }
 
 //
@@ -175,7 +248,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // can't be reached, a lost request, or a lost reply.
 //
 // Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
+// handler function on the server side does not return.  Thus, there
 // is no need to implement your own timeouts around Call().
 //
 // look at the comments in ../labrpc/labrpc.go for more details.
@@ -239,12 +312,164 @@ func (rf *Raft) killed() bool {
 // heart beats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		// Follower 在一定时间内未收到心跳，那么就会超时成为 Candidate，发起选举
+		time.Sleep(getRandomElectTimeout())
+		// 加锁
+		rf.mu.Lock()
+		if rf.state == Leader {
+			// leader 无需发起选举
+			rf.mu.Unlock()
+			continue // 跳过本次超时，不能直接退出函数，因为 leader 可能下一秒就不是 leader 了
+		}
+		rf.becomeCandidate()
+		DPrintf("peer: %d become candidate, and begin to vote", rf.me)
+		var votes uint32 = 1 // 自己投给自己的一票
+		for peerId := range rf.peers {
+			if peerId == rf.me {
+				continue
+			}
+			go rf.sendRequestVoteToPeer(peerId, &votes)
+		}
 
+		rf.mu.Unlock()
 	}
+}
+
+// 给请求其它节点投票
+func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
+	// 得到 args 得加锁
+	rf.mu.Lock()
+	args := &RequestVoteArgs{
+		Term:        rf.currentTerm,
+		CandidateId: rf.me,
+	}
+	rf.mu.Unlock()
+
+	reply := &RequestVoteReply{}
+	ok := rf.sendRequestVote(peerId, args, reply)
+	if !ok {
+		DPrintf("sendRequestVote err, args: %v, reply: %v", *args, *reply)
+		return
+	}
+
+	// 处理请求结果
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("peer: %d send vote to peer: %d, args: %v, reply: %v", rf.me, peerId, *args, *reply)
+	// 如果在发送选票期间，state 发生了变化，或者任期发生了变化，那么这次投票无效
+	if rf.state != Candidate || args.Term != rf.currentTerm {
+		return
+	}
+
+	if reply.Term > rf.currentTerm {
+		// 发现任期大的，成为 Follower，然后返回
+		rf.becomeFollower(reply.Term)
+		return
+	}
+	// 没有收到投票
+	if !reply.VoteGranted {
+		DPrintf("peer: %d send RequestVote to %d but not received vote", rf.me, peerId)
+		return
+	}
+	// 收到了投票
+	currentVotes := atomic.AddUint32(votes, 1)
+	// 获得了超过半数的投票，那么成为 leader
+	// 如果 len(peers) = 3 / 2 = 1 + 1 = 2，那么至少应该得到 2 票
+	if int(currentVotes) >= (len(rf.peers)/2 + 1) {
+		rf.becomeLeader()
+	}
+}
+
+//
+// state operations
+//
+
+func (rf *Raft) becomeFollower(term int) {
+	rf.currentTerm = term
+	rf.state = Follower
+	rf.votedFor = -1 // 追随者重置投票
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.state = Leader
+	rf.leaderId = rf.me
+	go rf.appendEntriesLoop()
+}
+
+func (rf *Raft) becomeCandidate() {
+	rf.currentTerm += 1 // 任期+1
+	rf.state = Candidate
+	rf.votedFor = rf.me // 给自己投票
+}
+
+//
+// loop
+//
+
+// leader 独有 loop，发送日志、心跳
+func (rf *Raft) appendEntriesLoop() {
+	for !rf.killed() {
+		// 非 leader 直接退出，防止 leader 突然遇到大的任期后成为 Follower
+		rf.mu.Lock()
+		if rf.state != Leader {
+			rf.mu.Unlock()
+			return
+		}
+
+		for peerId := range rf.peers {
+			if peerId == rf.me { // 跳过自己
+				continue
+			}
+			go rf.sendAppendEntriesToPeer(peerId)
+		}
+		rf.mu.Unlock()
+		time.Sleep(heartbeatInterval)
+	}
+}
+
+// 应用日志 loop
+func (rf *Raft) applyLogLoop() {
+	for !rf.killed() {
+		time.Sleep(applyInterval)
+	}
+}
+
+func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
+	rf.mu.Lock()
+	args := &AppendEntriesArgs{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+	}
+	rf.mu.Unlock()
+	reply := &AppendEntriesReply{}
+	ok := rf.sendAppendEntries(peerId, args, reply)
+	if !ok {
+		DPrintf("leader: %d send append entries to peer: %d fail, args: %v, reply: %v",
+			rf.me, peerId, *args, *reply)
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("leader: %d send entries to peer: %d, args: %v, reply: %v", rf.me, peerId, *args, *reply)
+	// 如果不再是 leader，或者任期变了，那么就不再处理这次同步了
+	if rf.state != Leader || rf.currentTerm != args.Term {
+		DPrintf("leader: %d handle AppendEntries mismatched", rf.me)
+		return
+	}
+	// 发现任期大的，立马认怂
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		return
+	}
+	// 同步未成功
+	if !reply.Success {
+		return
+	}
+	// TODO 同步成功后，需要更新 commitIndex、applyIndex
 }
 
 // Make
@@ -266,8 +491,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.leaderId = -1   // -1 表示暂时没有 leader
+	rf.votedFor = -1   // -1 表示没有投过票
+	rf.currentTerm = 0 // 初始任期为0
+	rf.applyCh = applyCh
+	rf.state = Follower // 初始化为 Follower
 
 	// initialize from state persisted before a crash
+	// 读取持久化数据可能会改变任期、投票等数据
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
