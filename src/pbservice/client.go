@@ -19,31 +19,15 @@ func MakeClerk(vshost string, me string) *Clerk {
 	return ck
 }
 
-//
-// call() sends an RPC to the rpcname handler on server srv
-// with arguments args, waits for the reply, and leaves the
-// reply in reply. the reply argument should be a pointer
-// to a reply structure.
-//
-// the return value is true if the server responded, and false
-// if call() was not able to contact the server. in particular,
-// the reply's contents are only valid if call() returned true.
-//
-// you should assume that call() will time out and return an
-// error after a while if it doesn't get a reply from the server.
-//
-// please use call() to send all RPCs, in client.go and server.go.
-// please don't change this function.
-//
 func call(srv string, rpcname string,
 	args any, reply any) bool {
-	c, errx := rpc.Dial("unix", srv)
-	if errx != nil {
+	c, err := rpc.Dial("unix", srv)
+	if err != nil {
 		return false
 	}
 	defer c.Close()
 
-	err := c.Call(rpcname, args, reply)
+	err = c.Call(rpcname, args, reply)
 	if err == nil {
 		return true
 	}
@@ -56,16 +40,14 @@ func call(srv string, rpcname string,
 // Get() must keep trying until it either the
 // primary replies with the value or the primary
 // says the key doesn't exist (has never been Put().
-//
 func (ck *Clerk) Get(key string) string {
-
 	// Your code here.
 	args := GetArgs{Key: key}
 	reply := GetReply{}
 
 	ok := call(ck.vs.Primary(), "PBServer.Get", args, &reply)
 	for (reply.Err != OK && reply.Err != ErrNoKey) || ok == false {
-		//rpc failed
+		// rpc failed
 		ok = call(ck.vs.Primary(), "PBServer.Get", args, &reply)
 		time.Sleep(viewservice.PingInterval)
 	}
@@ -76,9 +58,7 @@ func (ck *Clerk) Get(key string) string {
 // Put
 // tell the primary to update key's value.
 // must keep trying until it succeeds.
-//
 func (ck *Clerk) Put(key string, value string) {
-
 	// Your code here.
 	args := PutArgs{Key: key, Value: value}
 	reply := PutReply{}

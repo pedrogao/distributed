@@ -25,3 +25,5 @@
 - [MIT 6.824 : Spring 2015 lab2](https://www.cnblogs.com/yaodd/p/6086384.html)
 - [DDIA](http://ddia.vonng.com/#/)
 - [Distributed Systems Notes](https://www.cl.cam.ac.uk/teaching/2122/ConcDisSys/dist-sys-notes.pdf)
+- [可靠分布式系统-paxos的直观解释](https://blog.openacid.com/algo/paxos/#slide-00)
+- [将 paxos 和 raft 统一到一个协议下: abstract-paxos](https://blog.openacid.com/algo/abstract-paxos/#quorum)

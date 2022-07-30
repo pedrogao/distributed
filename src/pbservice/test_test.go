@@ -3,7 +3,6 @@ package pbservice
 import (
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pedrogao/log"
 	"pedrogao/distributed/viewservice"
 )
 
@@ -31,6 +31,10 @@ func port(tag string, host int) string {
 	s += tag + "-"
 	s += strconv.Itoa(host)
 	return s
+}
+
+func init() {
+	//log.SetOptions(log.WithLevel(log.ErrorLevel))
 }
 
 func TestBasicFail(t *testing.T) {
@@ -124,13 +128,13 @@ func TestBasicFail(t *testing.T) {
 	s2.kill()
 	s3 := StartServer(vshost, port(tag, 3))
 	time.Sleep(1 * time.Second)
-	get_done := false
+	getDone := false
 	go func() {
 		ck.Get("1")
-		get_done = true
+		getDone = true
 	}()
 	time.Sleep(2 * time.Second)
-	if get_done {
+	if getDone {
 		t.Fatalf("ck.Get() returned even though no initialized primary")
 	}
 
@@ -167,7 +171,7 @@ func TestFailPut(t *testing.T) {
 		}
 		time.Sleep(viewservice.PingInterval)
 	}
-	time.Sleep(time.Second) // wait for backup initializion
+	time.Sleep(time.Second) // wait for backup initialization
 	v1, _ := vck.Get()
 	if v1.Primary != s1.me || v1.Backup != s2.me {
 		t.Fatalf("wrong primary or backup")
@@ -190,7 +194,7 @@ func TestFailPut(t *testing.T) {
 
 	for i := 0; i < viewservice.DeadPings*3; i++ {
 		v, _ := vck.Get()
-		if v.Viewnum > v1.Viewnum && v.Primary != "" && v.Backup != "" {
+		if v.ViewNum > v1.ViewNum && v.Primary != "" && v.Backup != "" {
 			break
 		}
 		time.Sleep(viewservice.PingInterval)
@@ -212,7 +216,7 @@ func TestFailPut(t *testing.T) {
 
 	for i := 0; i < viewservice.DeadPings*3; i++ {
 		v, _ := vck.Get()
-		if v.Viewnum > v2.Viewnum && v.Primary != "" {
+		if v.ViewNum > v2.ViewNum && v.Primary != "" {
 			break
 		}
 		time.Sleep(viewservice.PingInterval)
@@ -829,11 +833,11 @@ func TestPartition2(t *testing.T) {
 	// enough that it won't reach s1 until after s1 is no
 	// longer the primary.
 	delay = 5
-	stale_get := false
+	staleGet := false
 	go func() {
 		x := ck1.Get("a")
 		if x == "1" {
-			stale_get = true
+			staleGet = true
 		}
 	}()
 
@@ -872,7 +876,7 @@ func TestPartition2(t *testing.T) {
 	// wait for delayed get to s1 to complete.
 	time.Sleep(6 * time.Second)
 
-	if stale_get == true {
+	if staleGet == true {
 		t.Fatalf("partitioned primary replied to a Get with a stale value")
 	}
 

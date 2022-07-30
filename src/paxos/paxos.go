@@ -479,7 +479,7 @@ func (px *Paxos) Status(seq int) (Fate, any) {
 }
 
 // Kill
-// tell the peer to shut itself down.
+// tells the peer to shut itself down.
 // for testing.
 // please do not change these two functions.
 //

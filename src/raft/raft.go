@@ -152,117 +152,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-type AppendEntriesArgs struct {
-	Term     int // leader 任期
-	LeaderId int // leader ID
-}
-
-type AppendEntriesReply struct {
-	Term    int  // 回复者任期
-	Success bool // 是否同步成功
-}
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term = rf.currentTerm
-	// 发现任期小的，直接拒绝
-	if args.Term < rf.currentTerm {
-		reply.Success = false
-		return
-	}
-	rf.leaderId = args.LeaderId
-	reply.Success = true
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs,
-	reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
-
-// RequestVoteArgs
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term        int // 请求者任期
-	CandidateId int // 请求者Id
-}
-
-// RequestVoteReply
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int  // 回复者任期，如果回复者任期高，那么请求者成为追随者
-	VoteGranted bool // 是否投票
-}
-
-// RequestVote
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	// 处理他人的请求投票
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term = rf.currentTerm
-	// 1. 判断任期
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		return
-	}
-	// 如果你的任期大，那么我就成为 Follower
-	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
-	}
-	// 2. 判断任期是否可以投票，没有投过票，或者已经给请求者投过票，那么都可以投票
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId // 更新 votedFor
-	}
-	// 3. TODO 引入日志后还需判断日志的完整性
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus, there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 // Start
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -383,6 +272,47 @@ func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
 	}
 }
 
+type RequestVoteArgs struct {
+	// Your data here (2A, 2B).
+	Term        int // 请求者任期
+	CandidateId int // 请求者Id
+}
+
+type RequestVoteReply struct {
+	// Your data here (2A).
+	Term        int  // 回复者任期，如果回复者任期高，那么请求者成为追随者
+	VoteGranted bool // 是否投票
+}
+
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// Your code here (2A, 2B).
+	// 处理他人的请求投票
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	// 1. 判断任期
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		return
+	}
+	// 如果你的任期大，那么我就成为 Follower
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+	// 2. 判断任期是否可以投票，没有投过票，或者已经给请求者投过票，那么都可以投票
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId // 更新 votedFor
+	}
+	// 3. TODO 引入日志后还需判断日志的完整性
+}
+
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
 //
 // state operations
 //
@@ -470,6 +400,36 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		return
 	}
 	// TODO 同步成功后，需要更新 commitIndex、applyIndex
+}
+
+type AppendEntriesArgs struct {
+	Term     int // leader 任期
+	LeaderId int // leader ID
+}
+
+type AppendEntriesReply struct {
+	Term    int  // 回复者任期
+	Success bool // 是否同步成功
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	// 发现任期小的，直接拒绝
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		return
+	}
+	rf.leaderId = args.LeaderId
+	reply.Success = true
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs,
+	reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
 }
 
 // Make

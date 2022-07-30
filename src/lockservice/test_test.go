@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/pedrogao/log"
 )
 
 func tl(t *testing.T, ck *Clerk, lockname string, expected bool) {
@@ -38,6 +40,10 @@ func port(suffix string) string {
 	return s
 }
 
+func init() {
+	log.SetOptions(log.WithLevel(log.DebugLevel))
+}
+
 func TestBasic(t *testing.T) {
 	fmt.Printf("Test: Basic lock/unlock ...\n")
 
@@ -59,9 +65,9 @@ func TestBasic(t *testing.T) {
 	tu(t, ck, "b", true)
 
 	tl(t, ck, "a", true)
-	tl(t, ck, "a", false)
+	tl(t, ck, "a", false) // 重复加锁
 	tu(t, ck, "a", true)
-	tu(t, ck, "a", false)
+	tu(t, ck, "a", false) // 重复解锁
 
 	p.kill()
 	b.kill()

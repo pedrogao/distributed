@@ -26,7 +26,9 @@ type GetReply struct {
 	Value string
 }
 
+//
 // Your RPC definitions here.
+//
 
 type UpdateArgs struct {
 	Key   string

@@ -6,12 +6,11 @@ import (
 )
 
 // Clerk
-// the views ervice Clerk lives in the client
+// the views service Clerk lives in the client
 // and maintains a little state.
-//
 type Clerk struct {
 	me     string // client's name (host:port)
-	server string // viewservice's host:port
+	server string // view service's host:port
 }
 
 func MakeClerk(me string, server string) *Clerk {
@@ -21,48 +20,33 @@ func MakeClerk(me string, server string) *Clerk {
 	return ck
 }
 
-//
-// call() sends an RPC to the rpcname handler on server srv
-// with arguments args, waits for the reply, and leaves the
-// reply in reply. the reply argument should be a pointer
-// to a reply structure.
-//
-// the return value is true if the server responded, and false
-// if call() was not able to contact the server. in particular,
-// the reply's contents are only valid if call() returned true.
-//
-// you should assume that call() will time out and return an
-// error after a while if it doesn't get a reply from the server.
-//
-// please use call() to send all RPCs, in client.go and server.go.
-// please don't change this function.
-//
 func call(srv string, rpcname string,
 	args any, reply any) bool {
-	c, errx := rpc.Dial("unix", srv)
-	if errx != nil {
+	c, err := rpc.Dial("unix", srv)
+	if err != nil {
 		return false
 	}
 	defer c.Close()
 
-	err := c.Call(rpcname, args, reply)
+	err = c.Call(rpcname, args, reply)
 	if err == nil {
 		return true
 	}
 	return false
 }
 
-func (ck *Clerk) Ping(viewnum uint) (View, error) {
+func (ck *Clerk) Ping(viewNum uint) (View, error) {
 	// prepare the arguments.
-	args := &PingArgs{}
-	args.Me = ck.me
-	args.Viewnum = viewnum
+	args := &PingArgs{
+		Me:      ck.me,
+		ViewNum: viewNum,
+	}
 	var reply PingReply
 
 	// send an RPC request, wait for the reply.
 	ok := call(ck.server, "ViewServer.Ping", args, &reply)
-	if ok == false {
-		return View{}, fmt.Errorf("ping(%v) failed", viewnum)
+	if !ok {
+		return View{}, fmt.Errorf("ping(%v) failed", viewNum)
 	}
 
 	return reply.View, nil

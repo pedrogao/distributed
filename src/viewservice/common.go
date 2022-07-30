@@ -33,17 +33,24 @@ import "time"
 // a time.
 //
 
+// View 视图
 type View struct {
-	Viewnum uint
-	Primary string
-	Backup  string
+	ViewNum uint   // 视图序号
+	Primary string // 主节点，格式 host:port
+	Backup  string // 从节点，格式 host:port
+}
+
+// Equals 判断视图是否相等
+func (v *View) Equals(other *View) bool {
+	return other.ViewNum == v.ViewNum &&
+		other.Primary == v.Primary && other.Backup == v.Backup
 }
 
 // PingInterval clients should send a Ping RPC this often,
-// to tell the viewservice that the client is alive.
+// to tell the view service that the client is alive.
 const PingInterval = time.Millisecond * 100
 
-// DeadPings the viewserver will declare a client dead if it misses
+// DeadPings the view server will declare a client dead if it misses
 // this many Ping RPCs in a row.
 const DeadPings = 5
 
@@ -53,13 +60,13 @@ const DeadPings = 5
 // has seen the latest view, and for p/b server to learn
 // the latest view.
 //
-// If Viewnum is zero, the caller is signalling that it is
+// If ViewNum is zero, the caller is signalling that it is
 // alive and could become backup if needed.
 //
 
 type PingArgs struct {
 	Me      string // "host:port"
-	Viewnum uint   // caller's notion of current view #
+	ViewNum uint   // caller's notion of current view #
 }
 
 type PingReply struct {

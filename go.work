@@ -1,5 +1,6 @@
 go 1.18
 
-use ./src
+use ./common
 use ./log
+use ./src
 
