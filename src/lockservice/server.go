@@ -7,24 +7,30 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pedrogao/log"
 )
 
+type version struct {
+	Seqno  int64 // 序号
+	Val    bool  // 值
+	Backup bool  // 是否备份
+}
+
 type LockServer struct {
 	mu    sync.Mutex
 	l     net.Listener
-	dead  bool // for test_test.go
-	dying bool // for test_test.go
+	dead  int32 // for test_test.go
+	dying bool  // for test_test.go
 
 	amPrimary bool   // am I the primary?
 	backup    string // backup's port
 	me        string
 
 	// for each lock name, is it locked?
-	locks      map[string]bool
-	backupInfo map[string]bool // 是否备份而来
+	locks map[string][]*version
 
 	client *Clerk
 }
@@ -39,25 +45,41 @@ type LockServer struct {
 func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-
-	locked, _ := ls.locks[args.LockName]
-
 	// 如果是客户端发送的同一次请求，那么返回 true
 	// case1：主备之间，主库挂了，但已经同步到了从库
 	// case2：客户端请求丢包，二次请求了
-	if locked && ls.backupInfo[args.LockName] {
-		log.Debugf("%s Handle Lock successful in backup, args: %v, reply: %v", ls.me, args, reply)
+	// case3: 客户端对 a 加锁、且已经备份到了从库，然后主库挂了，那么客户端对从库加锁，那么应该返回 false
+	vector := ls.locks[args.LockName]
+	idx := versionIndex(vector, args.Number)
+	// idx >= 0 表示 value 是以前的版本，且已加锁
+	if idx >= 0 && vector[idx].Val {
+		log.Debugf("%s Handle Lock vector, vector: %v, idx: %d, number: %v", ls.me, vector, idx, args.Number)
 		reply.OK = true
 		return nil
 	}
-
-	if locked {
-		log.Debugf("%s Handle Lock fail, args: %v, reply: %v", ls.me, args, reply)
+	// 旧版本，且旧版本没有加锁
+	if idx >= 0 && !vector[idx].Val {
+		log.Debugf("%s Handle Lock vector fail, args: %v, reply: %v", ls.me, args, reply)
 		reply.OK = false
 		reply.Err = ErrLockFailed
 		return nil
 	}
-
+	// 当前版本，取最近的 version
+	if len(vector) > 0 {
+		bigger := biggerVersionIndex(vector, args.Number)
+		var currentVersion *version
+		if bigger >= 0 {
+			currentVersion = vector[bigger]
+		} else {
+			currentVersion = vector[len(vector)-1]
+		}
+		if currentVersion.Val {
+			log.Debugf("%s Handle Lock fail, args: %v, reply: %v", ls.me, args, reply)
+			reply.OK = false
+			reply.Err = ErrLockFailed
+			return nil
+		}
+	}
 	// 主节点需要向从节点备份
 	if ls.amPrimary {
 		log.Debugf("%s Update backup, args: %v", ls.me, args)
@@ -66,16 +88,23 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 				break
 			}
 			if i == RetryTimes {
-				log.Error("%s update backup fail, times: %d", ls.me, RetryTimes)
-				reply.OK = false
-				reply.Err = ErrBackup
-				return nil
+				log.Errorf("%s update backup fail, times: %d", ls.me, RetryTimes)
 			}
 		}
 	}
 	// 加锁成功
 	reply.OK = true
-	ls.locks[args.LockName] = true
+	if _, ok := ls.locks[args.LockName]; !ok {
+		ls.locks[args.LockName] = []*version{{
+			Seqno: args.Number,
+			Val:   true,
+		}}
+	} else {
+		ls.locks[args.LockName] = append(ls.locks[args.LockName], &version{
+			Seqno: args.Number,
+			Val:   true,
+		})
+	}
 	log.Debugf("%s Handle Lock successful, args: %v, reply: %v", ls.me, args, reply)
 	return nil
 }
@@ -87,25 +116,46 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 
-	locked, ok := ls.locks[args.LockName]
+	_, ok := ls.locks[args.LockName]
 	if !ok {
 		reply.OK = false
 		reply.Err = ErrNoSuckLock
 		log.Debugf("%s Handle Unlock fail, no suck lock, args: %v, reply: %v", ls.me, args, reply)
 		return nil
 	}
-	// case1：主库解锁成功，然后同步到从库，但是主库的ack被丢失了，因此客户端会再次请求从库，此时从库返回 true
-	if !locked && ls.backupInfo[args.LockName] {
+	// case2：备库，且 seqno 已经存在于旧版本，那么新的 unlock 不会更新值，但仍返回成功。 核心点：保存旧版本的 seqno
+	vector, ok := ls.locks[args.LockName]
+	idx := versionIndex(vector, args.Number) // 旧版本
+	// idx >= 0 表示 value 是以前的版本，且已加锁
+	if idx >= 0 && !vector[idx].Val {
+		log.Debugf("%s Handle Unlock vector, ok: %v, vector: %v, idx: %d, number: %v", ls.me, ok, vector, idx, args.Number)
 		reply.OK = true
-		log.Debugf("%s Handle Unlock successful, unlock twice in pb, args: %v, reply: %v", ls.me, args, reply)
 		return nil
 	}
-	// 未加锁过
-	if !locked {
+	// 旧版本，且旧版本没有加锁
+	if idx >= 0 && vector[idx].Val {
+		log.Debugf("%s Handle Unlock fail in vector, args: %v, reply: %v", ls.me, args, reply)
 		reply.OK = false
 		reply.Err = ErrUnlockFailed
-		log.Debugf("%s Handle Unlock fail, invalid lock, args: %v, reply: %v", ls.me, args, reply)
 		return nil
+	}
+	// 当前版本，取最近的 version
+	if len(vector) > 0 {
+		// 如果时间戳大的新版本，那么已最近的版本为主
+		bigger := biggerVersionIndex(vector, args.Number)
+		var currentVersion *version
+		if bigger >= 0 {
+			currentVersion = vector[bigger]
+		} else {
+			currentVersion = vector[len(vector)-1]
+		}
+		if !currentVersion.Val {
+			log.Debugf("%s Handle Unlock fail, current: %v, args: %v, reply: %v",
+				ls.me, *currentVersion, args, reply)
+			reply.OK = false
+			reply.Err = ErrUnlockFailed
+			return nil
+		}
 	}
 	// 同步请求
 	if ls.amPrimary {
@@ -115,15 +165,23 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 				break
 			}
 			if i == RetryTimes {
-				reply.OK = false
-				reply.Err = ErrBackup
 				log.Errorf("%s update backup fail, times: %d", ls.me, RetryTimes)
-				return nil
 			}
 		}
 	}
 	// 解锁成功
-	ls.locks[args.LockName] = false
+	if _, ok := ls.locks[args.LockName]; !ok {
+		ls.locks[args.LockName] = []*version{{
+			Seqno: args.Number,
+			Val:   false,
+		}}
+	} else {
+		ls.locks[args.LockName] = append(ls.locks[args.LockName], &version{
+			Seqno: args.Number,
+			Val:   false,
+		})
+	}
+
 	reply.OK = true
 	log.Debugf("%s Handle Unlock successful, args: %v, reply: %v", ls.me, args, reply)
 	return nil
@@ -141,8 +199,19 @@ func (ls *LockServer) Update(args *UpdateArgs, reply *UpdateReply) error {
 		return nil
 	}
 
-	ls.locks[args.Lock] = args.Val
-	ls.backupInfo[args.Lock] = true
+	if _, ok := ls.locks[args.Lock]; !ok {
+		ls.locks[args.Lock] = []*version{{
+			Seqno:  args.Number,
+			Val:    args.Val,
+			Backup: true,
+		}}
+	} else {
+		ls.locks[args.Lock] = append(ls.locks[args.Lock], &version{
+			Seqno:  args.Number,
+			Val:    args.Val,
+			Backup: true,
+		})
+	}
 	log.Debugf("%s Handle Update successful, args: %v, reply: %v", ls.me, args, reply)
 	return nil
 }
@@ -153,10 +222,7 @@ func (ls *LockServer) Update(args *UpdateArgs, reply *UpdateReply) error {
 // please don't change this.
 //
 func (ls *LockServer) kill() {
-	ls.mu.Lock()
-	defer ls.mu.Unlock()
-
-	ls.dead = true
+	atomic.StoreInt32(&ls.dead, 1)
 	ls.l.Close()
 }
 
@@ -171,6 +237,7 @@ type DeafConn struct {
 }
 
 func (dc DeafConn) Write(p []byte) (n int, err error) {
+	// skip write, same as discard reply
 	return len(p), nil
 }
 func (dc DeafConn) Close() error {
@@ -184,9 +251,7 @@ func StartServer(primary string, backup string, amPrimary bool) *LockServer {
 	ls := new(LockServer)
 	ls.backup = backup
 	ls.amPrimary = amPrimary
-	ls.locks = map[string]bool{}
-	ls.backupInfo = map[string]bool{}
-
+	ls.locks = map[string][]*version{}
 	// Your initialization code here.
 
 	me := ""
@@ -215,10 +280,10 @@ func StartServer(primary string, backup string, amPrimary bool) *LockServer {
 	// or do anything to subvert it.
 	// create a thread to accept RPC connections from clients.
 	go func() {
-		for ls.dead == false {
+		for atomic.LoadInt32(&ls.dead) == 0 {
 			conn, err := ls.l.Accept()
 			// 无 err，且无 dead
-			if err == nil && ls.dead == false {
+			if err == nil && atomic.LoadInt32(&ls.dead) == 0 {
 				if ls.dying {
 					// process the request but force discard of reply.
 
@@ -236,7 +301,8 @@ func StartServer(primary string, backup string, amPrimary bool) *LockServer {
 					deafConn := DeafConn{c: conn}
 					rpcSrv.ServeConn(deafConn)
 
-					ls.dead = true
+					// ls.dead = true // 下次直接关闭
+					atomic.StoreInt32(&ls.dead, 1)
 				} else {
 					go rpcSrv.ServeConn(conn) // 正常RPC服务
 				}
@@ -244,7 +310,7 @@ func StartServer(primary string, backup string, amPrimary bool) *LockServer {
 				conn.Close()
 			}
 			// 出现 err
-			if err != nil && ls.dead == false {
+			if err != nil && atomic.LoadInt32(&ls.dead) == 0 {
 				fmt.Printf("LockServer(%v) accept: %v\n", me, err.Error())
 				ls.kill()
 			}

@@ -1,7 +1,7 @@
 package lockservice
 
 import (
-	"github.com/pedrogao/common"
+	"time"
 )
 
 //
@@ -69,5 +69,42 @@ type UpdateReply struct {
 }
 
 func nrand() int64 {
-	return common.RandInt64()
+	return time.Now().UnixNano()
+}
+
+func sliceIndex(slice []int64, val int64) int {
+	for i := len(slice) - 1; i >= 0; i-- {
+		v := slice[i]
+		if v == val {
+			return i
+		}
+	}
+	return -1
+}
+
+func versionIndex(vs []*version, seqno int64) int {
+	if vs == nil {
+		return -1
+	}
+	for i := len(vs) - 1; i >= 0; i-- {
+		v := vs[i]
+		if v.Seqno == seqno {
+			return i
+		}
+	}
+	return -1
+}
+
+// 之前的版本
+func biggerVersionIndex(vs []*version, seqno int64) int {
+	if vs == nil {
+		return -1
+	}
+	for i := len(vs) - 1; i >= 0; i-- {
+		v := vs[i]
+		if v.Seqno < seqno {
+			return i
+		}
+	}
+	return -1
 }

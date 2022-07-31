@@ -70,7 +70,7 @@ func (ck *Clerk) Lock(lockName string) bool {
 		}
 	}
 	if !reply.OK {
-		log.Errorf("Lock failed, err: %s", reply.Err)
+		log.Debugf("Lock failed, err: %s", reply.Err)
 	}
 	log.Debugf("Lock successful, args: %v, reply: %v", args, reply)
 	return reply.OK
@@ -100,7 +100,7 @@ func (ck *Clerk) Unlock(lockName string) bool {
 		}
 	}
 	if !reply.OK {
-		log.Errorf("Unlock failed, err: %s", reply.Err)
+		log.Debugf("Unlock failed, err: %s", reply.Err)
 	}
 	log.Debugf("Unlock successful, args: %v, reply: %v", args, reply)
 	return reply.OK
@@ -121,11 +121,11 @@ func (ck *Clerk) Update(lock string, number int64, val bool) bool {
 	reply := &UpdateReply{}
 	ok := call(ck.servers[0], "LockServer.Update", args, &reply)
 	if ok == false {
-		log.Errorf("call Update RPC err")
+		log.Debugf("call Update RPC err")
 		return false
 	}
 	if reply.Err != "" {
-		log.Errorf("Update RPC err: %s", reply.Err)
+		log.Debugf("Update RPC err: %s", reply.Err)
 	}
 	log.Debugf("Update successful, args: %v, reply: %v", args, reply)
 	return true

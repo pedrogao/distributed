@@ -20,7 +20,6 @@
 
 关键是备份保持与主节点相同的状态（即，主节点和备份状态应该就每个锁是持有还是释放达成一致）。
 
-
 您的系统需要容忍的唯一故障是单个故障停止服务器故障。故障停止失败意味着服务器停止。
 
 本实验中没有其他类型的故障（例如，客户端不故障，网络不故障，所有网络消息都传递到未崩溃的服务器，
@@ -37,14 +36,13 @@
 
 随后的实验室将能够容忍更广泛的故障。
 
-
 ## 提示
 
 首先修改 client.go 以便 Unlock() 是 Lock() 的副本，但修改为发送 Unlock RPC。您可以通过将 log.Printf() 插入 server.go 来测试您的代码。
 
 接下来，修改 server.go 以便 Unlock() 函数解锁锁。这应该只需要几行代码，它会让你通过第一个测试。
 
-修改 client.go，使其首先向主节点发送一个RPC，如果主节点没有响应，则向备份节点发送一个RPC。
+修改 client.go，使其首先向主节点发送一个 RPC，如果主节点没有响应，则向备份节点发送一个 RPC。
 
 修改 server.go 以便**主服务器告诉备份有关锁定和解锁操作的信息**。使用 RPC 进行此通信。
 
@@ -70,6 +68,109 @@ func nrand() int64 {
 追踪错误的最简单方法是插入 log.Printf() 语句，使用 go test > out 将输出收集到一个文件中，然后考虑输出是否符合您对代码应该如何表现的理解。最后一步是最重要的。
 
 如果测试失败，您可能需要查看 test_test.go 中的测试代码以找出失败的场景。
+
+## 难点
+
+case TestPrimaryFail7，如下：
+
+```go
+func TestPrimaryFail7(t *testing.T) {
+	fmt.Printf("Test: Primary failure just before reply #6 ...\n")
+	runtime.GOMAXPROCS(4)
+
+	phost := port("p")
+	bhost := port("b")
+	p := StartServer(phost, bhost, true)  // primary
+	b := StartServer(phost, bhost, false) // backup
+
+	ck1 := MakeClerk(phost, bhost)
+	ck2 := MakeClerk(phost, bhost)
+
+	tl(t, ck1, "a", true)  // ck1 lock a
+	tu(t, ck1, "a", true)  // ck2 unlock a
+	tu(t, ck2, "a", false) // ck2 unlock a
+	tl(t, ck1, "b", true)  // ck1 lock b
+
+	p.dying = true // p 这次请求仍会处理，但不会回复，且2s后端开，然后dead
+
+	ch := make(chan bool)
+	go func() {
+		ok := false
+		defer func() { ch <- ok }()
+		// 此处，发送了 unlock 请求，且 p、b 更新了元数据，但 p 无法 ack，因此客户端无法知道 unlock 成功
+		// 2s后，p 请求失败，此时 ck2 立马请求 b，但此时的 b 已经被下面的 lock 了，然后立马又 unlock
+		tu(t, ck2, "b", true) // 2 second delay until retry
+		ok = true
+	}()
+	time.Sleep(1 * time.Second)
+	tl(t, ck1, "b", true) // ck1 lock b，只会更新 b
+
+	ok := <-ch
+	if ok == false {
+		t.Fatalf("re-sent Unlock did not return true")
+	}
+	// 然后此时的 unlock 失败了，因此超时的 b 被 unlock 了
+	tu(t, ck1, "b", true) // ck1 unlock b
+
+	b.kill()
+	fmt.Printf("  ... Passed\n")
+}
+```
+
+方案，对加锁的值以`版本`的方式来存储，版本按照`时间戳`来排序，如下：
+
+```go
+type version struct {
+	Seqno  int64 // 序号
+	Val    bool  // 值
+	Backup bool  // 是否备份
+}
+```
+
+其实在分布式中，时间戳是不可靠的，客户端之间的时间并不一致，因此一般会使用`逻辑时钟`，但在这个 lab 中，时间戳就足够了，注意用的是`纳秒`。
+
+另外，版本之间通过时间戳来比较，如果是旧版本，那么按照`旧版本之前最近版本的值`来决定这次 Lock、Unlock 是否成功。
+
+## 结果
+
+```sh
+$ go test .
+Test: Basic lock/unlock ...
+  ... Passed
+Test: Primary failure ...
+  ... Passed
+Test: Primary failure just before reply #1 ...
+  ... Passed
+Test: Primary failure just before reply #2 ...
+  ... Passed
+Test: Primary failure just before reply #3 ...
+  ... Passed
+Test: Primary failure just before reply #4 ...
+  ... Passed
+Test: Primary failure just before reply #5 ...
+  ... Passed
+Test: Primary failure just before reply #6 ...
+  ... Passed
+Test: Primary failure just before reply #7 ...
+  ... Passed
+Test: Backup failure ...
+2022-07-31T23:15:32+08:00 ERROR server.go:168 /var/tmp/824-0/3277318-p update backup fail, times: 5
+2022-07-31T23:15:32+08:00 ERROR server.go:91 /var/tmp/824-0/3277318-p update backup fail, times: 5
+2022-07-31T23:15:32+08:00 ERROR server.go:168 /var/tmp/824-0/3277318-p update backup fail, times: 5
+2022-07-31T23:15:32+08:00 ERROR server.go:168 /var/tmp/824-0/3277318-p update backup fail, times: 5
+  ... Passed
+Test: Multiple clients with primary failure ...
+  ... Passed
+Test: Multiple clients, single lock, primary failure ...
+lock=0 nl=8772 nu=8716 locked=false
+--- FAIL: TestConcurrentCounts (5.00s)
+    test_test.go:481: lock race 1
+FAIL
+FAIL    pedrogao/distributed/lockservice        24.038s
+FAIL
+```
+
+`TestConcurrentCounts` 这个 case 出现数据 race 的情况，是因为这个 case 本身就有并发问题，`Lock`和`Unlock`加上一把大锁就不可能出现并发问题。
 
 ## 参考资料
 

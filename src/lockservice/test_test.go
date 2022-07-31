@@ -44,7 +44,7 @@ func port(suffix string) string {
 }
 
 func init() {
-	log.SetOptions(log.WithLevel(log.DebugLevel))
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 }
 
 func TestBasic(t *testing.T) {
@@ -256,22 +256,25 @@ func TestPrimaryFail7(t *testing.T) {
 	tu(t, ck2, "a", false) // ck2 unlock a
 	tl(t, ck1, "b", true)  // ck1 lock b
 
-	p.dying = true
+	p.dying = true // p 不再处理
 
 	ch := make(chan bool)
 	go func() {
 		ok := false
 		defer func() { ch <- ok }()
+		// 此处，发送了 unlock 请求，且 p、b 更新了元数据，但 p 无法 ack，因此客户端无法知道 unlock 成功
+		// 2s后，p 请求失败，此时 ck2 立马请求 b，但此时的 b 已经被下面的 lock 了，然后立马又 unlock
 		tu(t, ck2, "b", true) // 2 second delay until retry
 		ok = true
 	}()
 	time.Sleep(1 * time.Second)
-	tl(t, ck1, "b", true) // ck1 lock b
+	tl(t, ck1, "b", true) // ck1 lock b，只会更新 b
 
 	ok := <-ch
 	if ok == false {
 		t.Fatalf("re-sent Unlock did not return true")
 	}
+	// 然后此时的 unlock 失败了，因此超时的 b 被 unlock 了
 	tu(t, ck1, "b", true) // ck1 unlock b
 
 	b.kill()
@@ -299,12 +302,11 @@ func TestPrimaryFail8(t *testing.T) {
 	go func() {
 		ok := false
 		defer func() { ch <- ok }()
-		fmt.Printf("  ... 1\n")
+		// primary 的 fail 还得同步到 backup
 		tu(t, ck2, "a", false) // 2 second delay until retry
 		ok = true
 	}()
 	time.Sleep(1 * time.Second)
-	fmt.Printf("  ... 2\n")
 	tl(t, ck1, "a", true) // ck1 lock a
 
 	ok := <-ch
@@ -415,6 +417,7 @@ func TestMany(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+// 这个 case 自己本身就有并发问题
 func TestConcurrentCounts(t *testing.T) {
 	fmt.Printf("Test: Multiple clients, single lock, primary failure ...\n")
 	runtime.GOMAXPROCS(4)
@@ -472,8 +475,8 @@ func TestConcurrentCounts(t *testing.T) {
 			nu += unlocks[xi][locknum]
 		}
 		locked := ck.Unlock(strconv.Itoa(locknum))
-		// fmt.Printf("lock=%d nl=%d nu=%d locked=%v\n",
-		//   locknum, nl, nu, locked)
+		fmt.Printf("lock=%d nl=%d nu=%d locked=%v\n",
+			locknum, nl, nu, locked)
 		if nl < nu || nl > nu+1 {
 			t.Fatal("lock race 1")
 		}
