@@ -21,8 +21,6 @@ package paxos
 //
 
 import (
-	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"net/rpc"
@@ -32,6 +30,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/pedrogao/log"
 )
 
 // Fate px.Status() return values, indicating
@@ -77,7 +77,7 @@ type Paxos struct {
 //
 // the return value is true if the server responded, and false
 // if call() was not able to contact the server. in particular,
-// the replys contents are only valid if call() returned true.
+// the reply contents are only valid if call() returned true.
 //
 // you should assume that call() will time out and return an
 // error after a while if it does not get a reply from the server.
@@ -90,7 +90,7 @@ func call(srv string, name string, args any, reply any) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			//fmt.Printf("paxos Dial() failed: %v\n", err1)
+			log.Infof("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -101,7 +101,7 @@ func call(srv string, name string, args any, reply any) bool {
 		return true
 	}
 
-	//fmt.Println(err)
+	log.Info("call err: ", err)
 	return false
 }
 
@@ -244,7 +244,7 @@ func (px *Paxos) sendPrepare(seq int, v any) (bool, string, any) {
 		ProposeNum: pNum,
 	}
 
-	//fmt.Printf("PrepareArgs{ Seq: %v, ProposeNum: %v }\n", seq, pNum)
+	log.Infof("PrepareArgs{ Seq: %v, ProposeNum: %v }\n", seq, pNum)
 
 	replyPNum := ""
 	num := 0
@@ -276,7 +276,7 @@ func (px *Paxos) sendAccept(seq int, pNum string, v any) bool {
 		AcceptPValue: v,
 	}
 
-	//fmt.Printf("AcceptArgs{ Seq: %v, AcceptPNum: %v, AcceptPValue: %v }\n", seq, pNum, v)
+	log.Infof("AcceptArgs{ Seq: %v, AcceptPNum: %v, AcceptPValue: %v }\n", seq, pNum, v)
 
 	num := 0
 	for i, peer := range px.peers {
@@ -305,8 +305,8 @@ func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 	px.instances[seq] = tmp
 	px.mu.Unlock()
 
-	//fmt.Printf("instance{ state: %v, proposeNum: %v, acceptNum: %v, acceptValue: %v }\n",
-	//		tmp.state, tmp.proposeNum, tmp.acceptNum, tmp.acceptValue)
+	log.Infof("instance{ state: %v, proposeNum: %v, acceptNum: %v, acceptValue: %v }\n",
+		tmp.state, tmp.proposeNum, tmp.acceptNum, tmp.acceptValue)
 
 	args := DecideArgs{
 		Seq:        seq,
@@ -335,7 +335,7 @@ func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 //
 func (px *Paxos) Start(seq int, v any) {
 	// Your code here.
-	//fmt.Printf("Paxos server Start, seq = %v, value = %v\n", seq, v)
+	log.Infof("Paxos server Start, seq = %v, value = %v\n", seq, v)
 	go func() {
 		if seq < px.Min() {
 			return
@@ -435,7 +435,7 @@ func (px *Paxos) Min() int {
 	defer px.mu.Unlock()
 
 	min := px.dones[px.me]
-	// fmt.Printf("min = %v\n", min)
+	log.Infof("min = %v\n", min)
 	for i := range px.dones {
 		if px.dones[i] < min {
 			min = px.dones[i]
@@ -461,7 +461,6 @@ func (px *Paxos) Min() int {
 //
 func (px *Paxos) Status(seq int) (Fate, any) {
 	// Your code here.
-
 	if seq < px.Min() {
 		return Forgotten, nil
 	}
@@ -521,7 +520,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
-	//fmt.Printf("[Make] me = %d, len(px.peers) = %v\n", me, len(px.peers))
+	log.Infof("[Make] me = %d, len(px.peers) = %v\n", me, len(px.peers))
 	px.dones = make([]int, len(px.peers))
 	for i := range px.dones {
 		px.dones[i] = -1
@@ -561,7 +560,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 						f, _ := c1.File()
 						err := syscall.Shutdown(int(f.Fd()), syscall.SHUT_WR)
 						if err != nil {
-							fmt.Printf("shutdown: %v\n", err)
+							log.Infof("shutdown: %v\n", err)
 						}
 						atomic.AddInt32(&px.rpcCount, 1)
 						go rpcs.ServeConn(conn)
@@ -573,7 +572,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 					conn.Close()
 				}
 				if err != nil && px.isDead() == false {
-					fmt.Printf("Paxos(%v) accept: %v\n", me, err.Error())
+					log.Infof("Paxos(%v) accept: %v\n", me, err.Error())
 				}
 			}
 		}()

@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 func tl(t *testing.T, ck *Clerk, lockname string, expected bool) {
 	x := ck.Lock(lockname)
 	if x != expected {
+		debug.PrintStack()
 		t.Fatalf("Lock(%v) returned %v; expected %v", lockname, x, expected)
 	}
 }
@@ -22,6 +24,7 @@ func tl(t *testing.T, ck *Clerk, lockname string, expected bool) {
 func tu(t *testing.T, ck *Clerk, lockname string, expected bool) {
 	x := ck.Unlock(lockname)
 	if x != expected {
+		debug.PrintStack()
 		t.Fatalf("Unlock(%v) returned %v; expected %v", lockname, x, expected)
 	}
 }
@@ -222,14 +225,14 @@ func TestPrimaryFail6(t *testing.T) {
 	ck1 := MakeClerk(phost, bhost)
 	ck2 := MakeClerk(phost, bhost)
 
-	tl(t, ck1, "a", true)
-	tu(t, ck1, "a", true)
-	tu(t, ck2, "a", false)
-	tl(t, ck1, "b", true)
+	tl(t, ck1, "a", true)  // ck1 clock a
+	tu(t, ck1, "a", true)  // ck1 unlock a
+	tu(t, ck2, "a", false) // ck2 unlock a => false
+	tl(t, ck1, "b", true)  // ck1 lock b
 
 	p.dying = true
 
-	tu(t, ck2, "b", true)
+	tu(t, ck2, "b", true) // ck2 unlock b
 	tl(t, ck1, "b", true)
 
 	b.kill()
@@ -248,10 +251,10 @@ func TestPrimaryFail7(t *testing.T) {
 	ck1 := MakeClerk(phost, bhost)
 	ck2 := MakeClerk(phost, bhost)
 
-	tl(t, ck1, "a", true)
-	tu(t, ck1, "a", true)
-	tu(t, ck2, "a", false)
-	tl(t, ck1, "b", true)
+	tl(t, ck1, "a", true)  // ck1 lock a
+	tu(t, ck1, "a", true)  // ck2 unlock a
+	tu(t, ck2, "a", false) // ck2 unlock a
+	tl(t, ck1, "b", true)  // ck1 lock b
 
 	p.dying = true
 
@@ -263,14 +266,13 @@ func TestPrimaryFail7(t *testing.T) {
 		ok = true
 	}()
 	time.Sleep(1 * time.Second)
-	tl(t, ck1, "b", true)
+	tl(t, ck1, "b", true) // ck1 lock b
 
 	ok := <-ch
 	if ok == false {
 		t.Fatalf("re-sent Unlock did not return true")
 	}
-
-	tu(t, ck1, "b", true)
+	tu(t, ck1, "b", true) // ck1 unlock b
 
 	b.kill()
 	fmt.Printf("  ... Passed\n")
@@ -288,8 +290,8 @@ func TestPrimaryFail8(t *testing.T) {
 	ck1 := MakeClerk(phost, bhost)
 	ck2 := MakeClerk(phost, bhost)
 
-	tl(t, ck1, "a", true)
-	tu(t, ck1, "a", true)
+	tl(t, ck1, "a", true) // ck1 lock a
+	tu(t, ck1, "a", true) // ck1 unlock a
 
 	p.dying = true
 
@@ -297,11 +299,13 @@ func TestPrimaryFail8(t *testing.T) {
 	go func() {
 		ok := false
 		defer func() { ch <- ok }()
+		fmt.Printf("  ... 1\n")
 		tu(t, ck2, "a", false) // 2 second delay until retry
 		ok = true
 	}()
 	time.Sleep(1 * time.Second)
-	tl(t, ck1, "a", true)
+	fmt.Printf("  ... 2\n")
+	tl(t, ck1, "a", true) // ck1 lock a
 
 	ok := <-ch
 	if ok == false {

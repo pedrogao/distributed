@@ -11,7 +11,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pedrogao/log"
 )
+
+func init() {
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
+}
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)

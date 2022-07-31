@@ -23,8 +23,8 @@ type LockServer struct {
 	me        string
 
 	// for each lock name, is it locked?
-	locks   map[string]bool
-	numbers map[string]int64
+	locks      map[string]bool
+	backupInfo map[string]bool // 是否备份而来
 
 	client *Clerk
 }
@@ -45,8 +45,8 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 	// 如果是客户端发送的同一次请求，那么返回 true
 	// case1：主备之间，主库挂了，但已经同步到了从库
 	// case2：客户端请求丢包，二次请求了
-	if locked && ls.numbers[args.LockName] == args.Number {
-		log.Debugf("%s Handle Lock successful in same number, args: %v, reply: %v", ls.me, args, reply)
+	if locked && ls.backupInfo[args.LockName] {
+		log.Debugf("%s Handle Lock successful in backup, args: %v, reply: %v", ls.me, args, reply)
 		reply.OK = true
 		return nil
 	}
@@ -76,7 +76,6 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 	// 加锁成功
 	reply.OK = true
 	ls.locks[args.LockName] = true
-	ls.numbers[args.LockName] = args.Number
 	log.Debugf("%s Handle Lock successful, args: %v, reply: %v", ls.me, args, reply)
 	return nil
 }
@@ -95,6 +94,12 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 		log.Debugf("%s Handle Unlock fail, no suck lock, args: %v, reply: %v", ls.me, args, reply)
 		return nil
 	}
+	// case1：主库解锁成功，然后同步到从库，但是主库的ack被丢失了，因此客户端会再次请求从库，此时从库返回 true
+	if !locked && ls.backupInfo[args.LockName] {
+		reply.OK = true
+		log.Debugf("%s Handle Unlock successful, unlock twice in pb, args: %v, reply: %v", ls.me, args, reply)
+		return nil
+	}
 	// 未加锁过
 	if !locked {
 		reply.OK = false
@@ -103,11 +108,6 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 		return nil
 	}
 	// 同步请求
-	if args.Number == ls.numbers[args.LockName] {
-		reply.OK = true
-		log.Debugf("%s Handle Unlock successful same number, args: %v, reply: %v", ls.me, args, reply)
-	}
-
 	if ls.amPrimary {
 		log.Debugf("%s Update backup, args: %v", ls.me, args)
 		for i := 1; i <= RetryTimes; i++ {
@@ -142,7 +142,7 @@ func (ls *LockServer) Update(args *UpdateArgs, reply *UpdateReply) error {
 	}
 
 	ls.locks[args.Lock] = args.Val
-	ls.numbers[args.Lock] = args.Number
+	ls.backupInfo[args.Lock] = true
 	log.Debugf("%s Handle Update successful, args: %v, reply: %v", ls.me, args, reply)
 	return nil
 }
@@ -185,7 +185,7 @@ func StartServer(primary string, backup string, amPrimary bool) *LockServer {
 	ls.backup = backup
 	ls.amPrimary = amPrimary
 	ls.locks = map[string]bool{}
-	ls.numbers = map[string]int64{}
+	ls.backupInfo = map[string]bool{}
 
 	// Your initialization code here.
 
