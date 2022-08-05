@@ -1,16 +1,139 @@
 # primary backup
 
-The viewservice monitors whether each available server is alive or dead.
-If the current primary or backup becomes dead, the viewservice selects a server to replace it.
-A client checks with the viewservice to find the current primary.
-The servers cooperate with the viewservice to ensure that at most one primary is active at a time.
+> The viewservice monitors whether each available server is alive or dead.
+> If the current primary or backup becomes dead, the viewservice selects a server to replace it.
+> A client checks with the viewservice to find the current primary.
+> The servers cooperate with the viewservice to ensure that at most one primary is active at a time.
 
 viewservice 监视每个可用的服务器是活着还是死了。
 如果当前的主或备份失效，viewservice 会选择一个服务器来替换它。
 客户端检查 viewservice 以查找当前主节点。
 服务器与 viewservice 合作以确保一次最多有一个主服务器处于活动状态。
 
+在本实验中，您将使用主/备份复制的形式使键/值服务容错。为了确保各方（客户端和服务器）就哪个服务器是主服务器和备份服务器达成一致，  
+我们将介绍一种主服务器，称为视图服务。 viewservice 监视每个可用的服务器是活着还是死了。  
+如果当前的主或备份失效，viewservice 会选择一个服务器来替换它。  
+客户端检查视图服务以查找当前主节点。服务器与视图服务合作以确保一次最多有一个主服务器处于活动状态。
 
+您的键/值服务将允许更换故障服务器。如果主节点失败，视图服务会将备份提升为主节点。  
+如果备份失败，或者被提升，并且有空闲的服务器可用，viewservice 将使它成为备份。  
+主数据库会将其完整的数据库发送到新备份，然后将后续的 Puts 发送到备份，以确保备份的键/值数据库与主数据库保持相同。
 
+## viewservice
 
+首先，您将实现一个视图服务并确保它通过我们的测试；在 B 部分中，您将构建键/值服务。  
+您的视图服务本身不会被复制，因此它会相对简单。 B 部分比 A 部分困难得多，因为 K/V 服务是复制的，您必须设计大部分复制协议。
 
+视图服务通过一系列编号的视图，每个视图都有一个主视图和（如果可能的话）一个备份。视图由视图编号和视图的主服务器和备份服务器的标识（网络端口名称）组成。
+
+视图中的主视图必须始终是前一个视图的主视图或备份视图。这有助于确保保留键/值服务的状态。  
+一个例外：当视图服务第一次启动时，它应该接受任何服务器作为第一个主服务器。  
+视图中的备份可以是任何服务器（主服务器除外），或者如果没有可用的服务器（由空字符串“”表示），则可以完全丢失。
+
+每个键/值服务器应在每个 PingInterval 发送一次 Ping RPC（请参阅 viewservice/common.go）。  
+视图服务使用当前视图的描述回复 Ping。 Ping 让视图服务知道键/值服务器处于活动状态；通知当前视图的键/值服务器；并将键/值服务器知道的最新视图通知视图服务。  
+如果 viewservice 没有从服务器接收到 DeadPings PingIntervals 的 Ping，则 viewservice 应该认为服务器已死。  
+当服务器在崩溃后重新启动时，它应该发送一个或多个参数为零的 Ping，以通知视图服务它崩溃了。
+
+如果视图服务没有从主服务器和备份服务器接收到最近的 Ping，或者主服务器或备份服务器崩溃并重新启动，  
+或者如果没有备份服务器并且有空闲服务器（一直 Ping 但既不是主要也不是备份）。  
+但是视图服务不能更改视图（即，向调用者返回不同的视图），直到当前视图的主节点确认它正在当前视图中运行（通过发送带有当前视图编号的 Ping）。  
+如果视图服务尚未从当前视图的主视图接收到对当前视图的确认，则视图服务不应更改视图，即使它认为主视图或备份已经死亡。也就是说，  
+如果视图服务没有从视图 X 的主视图接收到 Ping(X)，则视图服务可能不会从视图 X 继续到视图 X+1。
+
+确认规则防止视图服务在键/值服务器之前获得多个视图。如果视图服务可以任意领先，那么它需要一个更复杂的设计，  
+其中保留视图历史，允许键/值服务器询问旧视图，并在适当时收集有关旧视图的垃圾信息。确认规则的缺点是，  
+如果主节点在确认它是主节点的视图之前发生故障，则视图服务不能再次更改视图。
+
+提示：您需要在 server.go 中向 ViewServer 添加字段，以跟踪 viewservice 最近收到来自每个服务器的 Ping 的时间。也许是从服务器名称到 time.Time 的映射。您可以使用 time.Now() 找到当前时间。
+
+提示：向 ViewServer 添加字段以跟踪当前视图。
+
+提示：您需要跟踪当前视图的主视图是否已确认（在 PingArgs.Viewnum 中）。
+
+提示：您的 viewservice 需要做出定期决策，例如，如果 viewservice 错过了来自主服务器的 DeadPings ping，则升级备份。将此代码添加到每个 PingInterval 调用一次的 tick() 函数。
+
+提示：可能有两个以上的服务器发送 Ping。如果需要，额外的（除了主要和备用）自愿成为备用。
+
+提示：viewservice 需要一种方法来检测主要或备份已失败并重新启动。例如，主节点可能会崩溃并快速重启，而不会错过发送单个 Ping。
+
+提示：在开始编程之前研究测试用例。如果测试失败，您可能需要查看 test_test.go 中的测试代码以找出失败的场景。
+
+追踪错误的最简单方法是插入 log.Printf() 语句，使用 go test > out 将输出收集到一个文件中，然后考虑输出是否符合您对代码应该如何表现的理解。
+
+请记住，Go RPC 服务器框架会为每个收到的 RPC 请求启动一个新线程。因此，如果多个 RPC 同时到达（来自多个客户端），则服务器中可能有多个线程同时运行。
+
+测试通过设置其死标志来终止服务器。您必须确保您的服务器在设置该标志时终止（使用 isdead() 对其进行测试），否则您可能无法完成测试用例。
+
+## PB
+
+在任何给定时间只有一个主节点处于活动状态，这一点至关重要。你应该有一个清晰的故事来解释为什么你的设计会出现这种情况。  
+一个危险：假设在某些情况下 S1 是主要的； viewservice 更改视图，使 S2 成为主要视图；  
+但 S1 还没有听说过新的观点，认为它仍然是主要的。然后一些客户端可能会与 S1 交谈，而其他客户端可能会与 S2 交谈，但看不到彼此的 Put()。
+
+不是活动主服务器的服务器要么不响应客户端，要么响应错误：它应该将 GetReply.Err 或 PutReply.Err 设置为 OK 以外的值。
+
+Clerk.Get()、Clerk.Put() 和 Clerk.Append() 仅应在完成操作后返回。也就是说，Put()/Append() 应该继续尝试，  
+直到他们更新了键/值数据库，而 Clerk.Get() 应该继续尝试，直到它检索到键的当前值（如果有的话）。  
+您的服务器必须过滤掉这些客户端重试将生成的重复 RPC，以确保操作的最多一次语义。  
+您可以假设每个职员只有一个未完成的 Put 或 Get。仔细考虑一下 Put 的提交点是什么。
+
+服务器不应针对它接收的每个 Put/Get 与 viewservice 对话，因为这会将 viewservice 置于性能和容错的关键路径上。  
+相反，服务器应该定期 Ping 视图服务（在 pbservice/server.go 的 tick() 中）以了解新视图。  
+类似地，客户端 Clerk 不应该针对它发送的每个 RPC 与视图服务进行对话；相反，Clerk 应该缓存当前的主节点，并且仅在当前主节点似乎已死时才与视图服务对话。
+
+您的一次一个主策略的一部分应该依赖于仅将视图 i 中的备份提升为视图 i+1 中的主视图的视图服务。  
+如果视图中的旧主节点尝试处理客户端请求，它将转发到其备份。如果该备份还没有听说过视图 i+1，那么它还没有充当主要的角色，  
+所以没有造成任何伤害。如果备份已经听说了视图 i+1 并且正在充当主节点，它就知道足以拒绝旧主节点转发的客户端请求。
+
+您需要确保备份能够看到对键/值数据库的每次更新，方法是将主数据库初始化与完整的键/值数据库并转发后续客户端操作。  
+您的主节点应该只将每个 Append() 的参数转发给备份；不要转发可能很大的结果值。
+
+这是一个推荐的攻击计划：
+
+您应该首先修改 pbservice/server.go 以 Ping viewservice 以找到当前视图。在 tick() 函数中执行此操作。  
+一旦服务器知道当前视图，它就知道它是主视图还是备份视图，或者两者都不是。
+
+在 pbservice/server.go 中实现 Get、Put 和 Append 处理程序；将键和值存储在 map[string]string 中。  
+如果键不存在，Append 应该使用空字符串作为前一个值。实现 client.go RPC 存根。
+
+修改您的处理程序，以便主将更新转发到备份。
+当服务器成为新视图中的备份时，主服务器应将主服务器的完整键/值数据库发送给它。
+修改 client.go 以便客户端继续重试，直到他们得到答案。确保在 PutAppendArgs 和 GetArgs（参见 common.go）中包含足够的信息，  
+以便键/值服务可以检测到重复项。修改键/值服务以正确处理重复项。
+
+修改 client.go 以应对失败的主节点。如果当前主节点没有响应，或者认为它不是主节点，  
+请让客户端咨询视图服务（以防主节点已更改）并重试。在重试之间休眠 viewservice.PingInterval 以避免消耗过多的 CPU 时间。
+
+您会看到一些“方法 Kill 的 ins 数量错误”投诉和大量“rpc：客户端协议错误”和“rpc：写入响应”投诉；别理他们。
+
+提示：您可能需要创建新的 RPC 来将客户端请求从主服务器转发到备份服务器，因为备份服务器应该拒绝直接的客户端请求，但应该接受转发的请求。
+
+提示：您可能需要创建新的 RPC 来处理完整的键/值数据库从主数据库到新备份的传输。您可以在一个 RPC 中发送整个数据库（例如，在 RPC 参数中包含一个 map[string]string）。
+
+提示：过滤重复的状态必须与键/值状态一起复制。
+
+提示：测试人员安排在描述包括“不可靠”的测试中丢失 RPC 回复。这将导致接收方执行 RPC，但由于发送方没有看到回复，因此无法判断服务器是否执行了 RPC。
+
+提示：您可能需要生成具有高概率唯一性的数字。尝试这个：
+
+```go
+import "crypto/rand"
+import "math/big"
+func nrand() int64 {
+  max := big.NewInt(int64(1) << 62)
+  bigx, _ := rand.Int(rand.Reader, max)
+  x := bigx.Int64()
+  return x
+}
+```
+
+提示：测试通过设置死标志来杀死服务器。您必须确保在设置该标志时您的服务器正确终止，否则您可能无法完成测试用例。
+
+提示：即使您的视图服务器通过了 A 部分中的所有测试，它仍然可能存在导致 B 部分失败的错误。
+
+提示：在开始编程之前研究测试用例
+
+## 参考资料
+
+- [Lab 2: Primary/Backup Key/Value Service](http://nil.csail.mit.edu/6.824/2015/labs/lab-2.html)

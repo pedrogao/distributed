@@ -165,7 +165,7 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 
 		// 更新该轮的状态
 		tmp := px.instances[args.Seq]
-		tmp.proposeNum = args.ProposeNum
+		tmp.proposeNum = args.ProposeNum // prepare 不更新值
 		px.instances[args.Seq] = tmp
 	}
 
@@ -197,7 +197,7 @@ func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
 		// 更新该轮的状态
 		tmp := px.instances[args.Seq]
 		tmp.proposeNum = args.AcceptPNum
-		tmp.acceptNum = args.AcceptPNum
+		tmp.acceptNum = args.AcceptPNum // accept才更新值
 		tmp.acceptValue = args.AcceptPValue
 		px.instances[args.Seq] = tmp
 	}

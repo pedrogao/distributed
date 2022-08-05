@@ -34,6 +34,7 @@ import "time"
 //
 
 // View 视图
+// 主要视图中的 primary 和 backup 出现了变化，就应该更新 ViewNum
 type View struct {
 	ViewNum uint   // 视图序号
 	Primary string // 主节点，格式 host:port
@@ -52,7 +53,7 @@ const PingInterval = time.Millisecond * 100
 
 // DeadPings the view server will declare a client dead if it misses
 // this many Ping RPCs in a row.
-const DeadPings = 5
+const DeadPings = 3
 
 //
 // Ping(): called by a primary/backup server to tell the

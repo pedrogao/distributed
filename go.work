@@ -3,4 +3,4 @@ go 1.18
 use ./common
 use ./log
 use ./src
-
+use ./paxos

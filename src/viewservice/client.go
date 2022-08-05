@@ -3,6 +3,8 @@ package viewservice
 import (
 	"fmt"
 	"net/rpc"
+
+	"github.com/pedrogao/log"
 )
 
 // Clerk
@@ -56,7 +58,8 @@ func (ck *Clerk) Get() (View, bool) {
 	args := &GetArgs{}
 	var reply GetReply
 	ok := call(ck.server, "ViewServer.Get", args, &reply)
-	if ok == false {
+	if !ok {
+		log.Error("Call Get View err: ", args, reply)
 		return View{}, false
 	}
 	return reply.View, true

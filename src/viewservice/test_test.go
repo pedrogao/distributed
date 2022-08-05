@@ -125,7 +125,7 @@ func Test1(t *testing.T) {
 			ck3.Ping(0)
 			v, _ := ck1.Ping(vx.ViewNum)
 
-			//fmt.Println("test", v)
+			// fmt.Println("test", v)
 
 			if v.Primary == ck1.me && v.Backup == ck3.me {
 				break

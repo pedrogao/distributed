@@ -5,7 +5,12 @@ import (
 	"time"
 
 	"pedrogao/distributed/viewservice"
+
+	"github.com/pedrogao/log"
 )
+
+// 重试次数必须大于视图服务的超时次数
+const RetryTimes = 5
 
 // You'll probably need to uncomment this:
 
@@ -23,6 +28,8 @@ func call(srv string, rpcname string,
 	args any, reply any) bool {
 	c, err := rpc.Dial("unix", srv)
 	if err != nil {
+		// debug.PrintStack()
+		log.Error("rpc dial err: ", err)
 		return false
 	}
 	defer c.Close()
@@ -44,11 +51,15 @@ func (ck *Clerk) Get(key string) string {
 	// Your code here.
 	args := GetArgs{Key: key}
 	reply := GetReply{}
-
-	ok := call(ck.vs.Primary(), "PBServer.Get", args, &reply)
-	for (reply.Err != OK && reply.Err != ErrNoKey) || ok == false {
-		// rpc failed
-		ok = call(ck.vs.Primary(), "PBServer.Get", args, &reply)
+	for i := 1; i <= RetryTimes; i++ {
+		ok := call(ck.vs.Primary(), "PBServer.Get", args, &reply)
+		if (reply.Err != OK && reply.Err != ErrNoKey) || !ok {
+			// rpc failed
+			log.Debugf("try times: %d call Get err, args: %v, reply: %v ", i, args, reply)
+		}
+		if ok && reply.Err == OK {
+			break
+		}
 		time.Sleep(viewservice.PingInterval)
 	}
 
@@ -63,10 +74,15 @@ func (ck *Clerk) Put(key string, value string) {
 	args := PutArgs{Key: key, Value: value}
 	reply := PutReply{}
 
-	ok := call(ck.vs.Primary(), "PBServer.Put", args, &reply)
-	for reply.Err != OK || ok == false {
-		//rpc failed
-		ok = call(ck.vs.Primary(), "PBServer.Put", args, &reply)
+	for i := 1; i <= RetryTimes; i++ {
+		ok := call(ck.vs.Primary(), "PBServer.Put", args, &reply)
+		if reply.Err != OK || ok == false {
+			// rpc failed
+			log.Debugf("try times: %d call Put err, args: %v, reply: %v", i, args, reply)
+		}
+		if ok && reply.Err == OK {
+			break
+		}
 		time.Sleep(viewservice.PingInterval)
 	}
 

@@ -7,17 +7,21 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/pedrogao/log"
 	"pedrogao/distributed/viewservice"
+
+	"github.com/pedrogao/log"
 )
 
 func check(ck *Clerk, key string, value string) {
 	v := ck.Get(key)
 	if v != value {
+		debug.PrintStack()
 		log.Fatalf("Get(%v) -> %v, expected %v", key, v, value)
 	}
 }
@@ -34,7 +38,7 @@ func port(tag string, host int) string {
 }
 
 func init() {
-	//log.SetOptions(log.WithLevel(log.ErrorLevel))
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 }
 
 func TestBasicFail(t *testing.T) {
@@ -154,9 +158,9 @@ func TestFailPut(t *testing.T) {
 
 	tag := "failput"
 	vshost := port(tag+"v", 1)
-	vs := viewservice.StartServer(vshost)
+	vs := viewservice.StartServer(vshost) // 视图服务
 	time.Sleep(time.Second)
-	vck := viewservice.MakeClerk("", vshost)
+	vck := viewservice.MakeClerk("", vshost) // 视图客户端
 
 	s1 := StartServer(vshost, port(tag, 1))
 	time.Sleep(time.Second)
@@ -176,7 +180,6 @@ func TestFailPut(t *testing.T) {
 	if v1.Primary != s1.me || v1.Backup != s2.me {
 		t.Fatalf("wrong primary or backup")
 	}
-
 	ck := MakeClerk(vshost, "")
 
 	ck.Put("a", "aa")
@@ -188,8 +191,8 @@ func TestFailPut(t *testing.T) {
 
 	// kill backup, then immediate Put
 	fmt.Printf("Test: Put() immediately after backup failure ...\n")
-	s2.kill()
-	ck.Put("a", "aaa")
+	s2.kill()          // s2 被 kill 了，那么 s2 ping 不通以后，s3 成为 backup，视图应该发生更新
+	ck.Put("a", "aaa") // FIXED 同步问题
 	check(ck, "a", "aaa")
 
 	for i := 0; i < viewservice.DeadPings*3; i++ {
@@ -212,7 +215,7 @@ func TestFailPut(t *testing.T) {
 	fmt.Printf("Test: Put() immediately after primary failure ...\n")
 	s1.kill()
 	ck.Put("b", "bbb")
-	check(ck, "b", "bbb")
+	check(ck, "b", "bbb") // FIXME，同步速度不够快
 
 	for i := 0; i < viewservice.DeadPings*3; i++ {
 		v, _ := vck.Get()
@@ -222,7 +225,9 @@ func TestFailPut(t *testing.T) {
 		time.Sleep(viewservice.PingInterval)
 	}
 	time.Sleep(time.Second)
-
+	// reply := &viewservice.GetReply{}
+	// vs.Get(nil, reply)
+	// fmt.Printf("Test: KV() %v, View() %v ...\n", s3.kv, reply.View)
 	check(ck, "a", "aaa")
 	check(ck, "b", "bbb")
 	check(ck, "c", "cc")
@@ -349,7 +354,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 	var sa [nservers]*PBServer
 	for i := 0; i < nservers; i++ {
 		sa[i] = StartServer(vshost, port(tag, i+1))
-		sa[i].unreliable = true
+		atomic.StoreInt32(&sa[i].unreliable, 1)
 	}
 
 	for iters := 0; iters < viewservice.DeadPings*2; iters++ {
@@ -552,7 +557,7 @@ func TestRepeatedCrashUnreliable(t *testing.T) {
 	var sa [nservers]*PBServer
 	for i := 0; i < nservers; i++ {
 		sa[i] = StartServer(vshost, port(tag, i+1))
-		sa[i].unreliable = true
+		atomic.StoreInt32(&sa[i].unreliable, 1)
 	}
 
 	for i := 0; i < viewservice.DeadPings; i++ {

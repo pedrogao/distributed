@@ -1,11 +1,11 @@
 package viewservice
 
 import (
-	"fmt"
 	"net"
 	"net/rpc"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pedrogao/log"
@@ -14,7 +14,7 @@ import (
 type ViewServer struct {
 	mu   sync.Mutex
 	l    net.Listener
-	dead bool
+	dead int32
 	me   string
 
 	// Your declarations here.
@@ -35,37 +35,15 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
-	log.Infof("server ping from: %s, view: %v", me, vs.view)
+	log.Debugf("server ping start from: %s, view: %v, args: %v, reply: %v",
+		me, vs.view, args, reply)
 
 	// the first ping from server 第一次 ping
 	if viewNum == 0 && vs.view.Primary == "" {
 		vs.view.Primary = me
 		vs.primaryAck = false
 		vs.view.ViewNum++
-		reply.View = vs.view
-		vs.clients[me] = time.Now()
-		return nil
-	}
-
-	// the first ping from backup 第一次 backup ping
-	// 备份为空，主节点已经ack，且主节点不是me
-	if vs.view.Backup == "" && vs.primaryAck && vs.view.Primary != me {
-		// primary acked
-		vs.view.Backup = me
-		vs.view.ViewNum++
-		vs.primaryAck = false
-		reply.View = vs.view
-
-		vs.clients[me] = time.Now()
-		return nil
-	}
-
-	// idle server 空闲服务，志愿者
-	// 不是主节点、不是备份节点，而且 viewNum 是 0
-	if me != vs.view.Backup && me != vs.view.Primary && viewNum == 0 {
-		// add new idle server
-		vs.volunteer = me
-		log.Infof("server Ping from volunteer: %s", vs.volunteer)
+		reply.View = vs.view // 返回当前视图
 		vs.clients[me] = time.Now()
 		return nil
 	}
@@ -80,10 +58,33 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 		return nil
 	}
 
+	// the first ping from backup 第一次 backup ping
+	// 备份为空，主节点已经ack，且主节点不是me
+	if vs.view.Backup == "" && vs.primaryAck && vs.view.Primary != me {
+		// primary acked
+		vs.view.Backup = me
+		vs.view.ViewNum++
+		vs.primaryAck = false // 备份节点加入了视图，但是主节点仍没有回复
+		reply.View = vs.view
+
+		vs.clients[me] = time.Now()
+		return nil
+	}
+
+	// idle server 空闲服务，志愿者
+	// 不是主节点、不是备份节点，而且 viewNum 是 0
+	if me != vs.view.Backup && me != vs.view.Primary && viewNum == 0 {
+		// add new idle server
+		vs.volunteer = me
+		log.Debugf("server Ping from volunteer: %s", vs.volunteer)
+		vs.clients[me] = time.Now()
+		return nil
+	}
+
 	// primary restart  主节点重启
 	if me == vs.view.Primary && viewNum == 0 && vs.primaryAck == true {
-		vs.view.Primary = vs.view.Backup
-		vs.view.Backup = me
+		vs.view.Primary = vs.view.Backup // 备份节点成为主节点
+		vs.view.Backup = me              // 当前节点成为备份节点
 		vs.view.ViewNum++
 		vs.primaryAck = false
 		reply.View = vs.view
@@ -93,7 +94,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	}
 
 	// default 默认处理
-	log.Infof("sever ping default from: %s, view: %v", me, vs.view)
+	log.Debugf("sever ping default from: %s, view: %v", me, vs.view)
 	vs.clients[me] = time.Now()
 	reply.View = vs.view
 	return nil
@@ -129,10 +130,10 @@ func (vs *ViewServer) tick() {
 	}
 
 	// primary die
-	pingTime, _ := vs.clients[vs.view.Primary]
+	pingTime, ok := vs.clients[vs.view.Primary]
 	// 如果主节点超过 5 次 ping 都未回复
-	if now.Sub(pingTime) > (DeadPings * PingInterval) {
-		log.Infof("server primary timeout: %v", vs.view)
+	if ok && now.Sub(pingTime) > (DeadPings*PingInterval) {
+		log.Debugf("server primary: %s timeout: %v", vs.view.Primary, vs.view)
 		// just wait，没有 ack 直接返回
 		// 如果 primaryAck 为 false，证明之前也没有主节点，因此无法直接提升备份节点为主节点
 		if vs.primaryAck == false {
@@ -144,33 +145,34 @@ func (vs *ViewServer) tick() {
 			vs.view.Primary = vs.view.Backup // 备份节点提升为主节点
 			vs.view.ViewNum++                // 视图+1
 			vs.primaryAck = false
-			log.Infof("new primary: %s view: %v", vs.view.Primary, vs.view)
+			log.Debugf("new primary: %s view: %v", vs.view.Primary, vs.view)
 			vs.view.Backup = "" // 备份节点为空
 			// make a volunteer become a backup 将志愿者提升为备份节点
 			if vs.volunteer != "" {
-				volTime, _ := vs.clients[vs.volunteer]
-				if now.Sub(volTime) < PingInterval { // 如果志愿者有响应，那么将志愿者提升为备份
+				volTime, ok := vs.clients[vs.volunteer]
+				if ok && now.Sub(volTime) < PingInterval { // 如果志愿者有响应，那么将志愿者提升为备份
 					vs.view.Backup = vs.volunteer
 					vs.volunteer = ""
-					log.Infof("new backup: %s view: %v", vs.view.Backup, vs.view)
+					log.Debugf("new backup: %s view: %v", vs.view.Backup, vs.view)
 				}
 			}
 		}
-		log.Infof("primary server tick, view: %v", vs.view)
+		log.Debugf("primary server tick, view: %v", vs.view)
 	}
 	// 备份节点为空，就无需检测备份节点，直接返回
 	if vs.view.Backup == "" {
+		log.Debugf("backup empty, view: %v", vs.view)
 		return
 	}
 	// 因为没有其它的讯息，所以只能通过断联来判断死亡
 	// backup dies 检查备份节点是否死亡
-	pingTime, _ = vs.clients[vs.view.Backup]
-	if now.Sub(pingTime) > (DeadPings * PingInterval) { // 备份节点长时间无回复，则表示死亡
+	pingTime, ok = vs.clients[vs.view.Backup]
+	if ok && now.Sub(pingTime) > (DeadPings*PingInterval) { // 备份节点长时间无回复，则表示死亡
 		vs.view.Backup = ""   // 备份为空
 		vs.view.ViewNum++     // 视图+1
 		vs.primaryAck = false // 每次更新视图，就得重置 primaryAck
 
-		log.Infof("server backup timeout, volunteer: %s", vs.volunteer)
+		log.Debugf("server backup timeout, volunteer: %s", vs.volunteer)
 		// make a volunteer become a backup
 		if vs.volunteer != "" {
 			volTime, _ := vs.clients[vs.volunteer]
@@ -179,7 +181,7 @@ func (vs *ViewServer) tick() {
 				vs.volunteer = ""
 			}
 		}
-		log.Infof("backup server tick, view: %v", vs.view)
+		log.Debugf("backup server tick, view: %v", vs.view)
 	}
 }
 
@@ -189,10 +191,7 @@ func (vs *ViewServer) tick() {
 // please don't change this function.
 //
 func (vs *ViewServer) Kill() {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	vs.dead = true
+	atomic.StoreInt32(&vs.dead, 1)
 	vs.l.Close()
 }
 
@@ -200,7 +199,6 @@ func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
 	// Your vs.* initializations here.
-
 	vs.clients = make(map[string]time.Time) // 客户端时间
 	vs.view = View{}
 	vs.view.ViewNum = 0
@@ -226,28 +224,28 @@ func StartServer(me string) *ViewServer {
 	// or do anything to subvert it.
 
 	// create a thread to accept RPC connections from clients.
-	go func() {
-		for vs.dead == false {
+	go func(vs *ViewServer) {
+		for atomic.LoadInt32(&vs.dead) == 0 {
 			conn, err := vs.l.Accept()
-			if err == nil && vs.dead == false {
+			if err == nil && atomic.LoadInt32(&vs.dead) == 0 {
 				go rpcSrv.ServeConn(conn)
 			} else if err == nil {
 				conn.Close()
 			}
-			if err != nil && vs.dead == false {
-				fmt.Printf("ViewServer(%v) accept: %v\n", me, err.Error())
+			if err != nil && atomic.LoadInt32(&vs.dead) == 0 {
+				log.Errorf("ViewServer(%v) accept: %v\n", me, err.Error())
 				vs.Kill()
 			}
 		}
-	}()
+	}(vs)
 
 	// create a thread to call tick() periodically.
-	go func() {
-		for vs.dead == false {
+	go func(vs *ViewServer) {
+		for atomic.LoadInt32(&vs.dead) == 0 {
 			vs.tick()
 			time.Sleep(PingInterval)
 		}
-	}()
+	}(vs)
 
 	return vs
 }
