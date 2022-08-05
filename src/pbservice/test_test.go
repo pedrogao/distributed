@@ -38,7 +38,7 @@ func port(tag string, host int) string {
 }
 
 func init() {
-	log.SetOptions(log.WithLevel(log.ErrorLevel))
+	log.SetOptions(log.WithLevel(log.DebugLevel))
 }
 
 func TestBasicFail(t *testing.T) {
@@ -271,7 +271,7 @@ func TestConcurrentSame(t *testing.T) {
 	// give p+b time to ack, initialize
 	time.Sleep(viewservice.PingInterval * viewservice.DeadPings)
 
-	done := false
+	var done int32 = 0
 
 	view1, _ := vck.Get()
 	const nclients = 3
@@ -280,7 +280,7 @@ func TestConcurrentSame(t *testing.T) {
 		go func(i int) {
 			ck := MakeClerk(vshost, "")
 			rr := rand.New(rand.NewSource(int64(os.Getpid() + i)))
-			for done == false {
+			for atomic.LoadInt32(&done) == 0 {
 				k := strconv.Itoa(rr.Int() % nkeys)
 				v := strconv.Itoa(rr.Int())
 				ck.Put(k, v)
@@ -289,7 +289,7 @@ func TestConcurrentSame(t *testing.T) {
 	}
 
 	time.Sleep(5 * time.Second)
-	done = true
+	atomic.StoreInt32(&done, 1)
 	time.Sleep(time.Second)
 
 	// read from primary
@@ -368,7 +368,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 	// give p+b time to ack, initialize
 	time.Sleep(viewservice.PingInterval * viewservice.DeadPings)
 
-	done := false
+	var done int32 = 0
 
 	view1, _ := vck.Get()
 	const nclients = 3
@@ -377,7 +377,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 		go func(i int) {
 			ck := MakeClerk(vshost, "")
 			rr := rand.New(rand.NewSource(int64(os.Getpid() + i)))
-			for done == false {
+			for atomic.LoadInt32(&done) == 0 {
 				k := strconv.Itoa(rr.Int() % nkeys)
 				v := strconv.Itoa(rr.Int())
 				ck.Put(k, v)
@@ -386,7 +386,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 	}
 
 	time.Sleep(5 * time.Second)
-	done = true
+	atomic.StoreInt32(&done, 1)
 	time.Sleep(time.Second)
 
 	// read from primary
@@ -465,12 +465,12 @@ func TestRepeatedCrash(t *testing.T) {
 	// wait a bit for primary to initialize backup
 	time.Sleep(viewservice.DeadPings * viewservice.PingInterval)
 
-	done := false
+	var done int32 = 0
 
 	go func() {
 		// kill and restart servers
 		rr := rand.New(rand.NewSource(int64(os.Getpid())))
-		for done == false {
+		for atomic.LoadInt32(&done) == 0 {
 			i := rr.Int() % nservers
 			// fmt.Printf("%v killing %v\n", ts(), 5001+i)
 			sa[i].kill()
@@ -496,7 +496,7 @@ func TestRepeatedCrash(t *testing.T) {
 			ck := MakeClerk(vshost, "")
 			data := map[string]string{}
 			rr := rand.New(rand.NewSource(int64(os.Getpid() + i)))
-			for done == false {
+			for atomic.LoadInt32(&done) == 0 {
 				k := strconv.Itoa((i * 1000000) + (rr.Int() % 10))
 				wanted, ok := data[k]
 				if ok {
@@ -517,7 +517,7 @@ func TestRepeatedCrash(t *testing.T) {
 	}
 
 	time.Sleep(20 * time.Second)
-	done = true
+	atomic.StoreInt32(&done, 1)
 
 	for i := 0; i < nth; i++ {
 		ok := <-cha[i]
@@ -571,12 +571,12 @@ func TestRepeatedCrashUnreliable(t *testing.T) {
 	// wait a bit for primary to initialize backup
 	time.Sleep(viewservice.DeadPings * viewservice.PingInterval)
 
-	done := false
+	var done int32 = 0
 
 	go func() {
 		// kill and restart servers
 		rr := rand.New(rand.NewSource(int64(os.Getpid())))
-		for done == false {
+		for atomic.LoadInt32(&done) == 0 {
 			i := rr.Int() % nservers
 			// fmt.Printf("%v killing %v\n", ts(), 5001+i)
 			sa[i].kill()
@@ -601,7 +601,7 @@ func TestRepeatedCrashUnreliable(t *testing.T) {
 			ck := MakeClerk(vshost, "")
 			data := map[string]string{}
 			rr := rand.New(rand.NewSource(int64(os.Getpid() + i)))
-			for done == false {
+			for atomic.LoadInt32(&done) == 0 {
 				k := strconv.Itoa((i * 1000000) + (rr.Int() % 10))
 				wanted, ok := data[k]
 				if ok {
@@ -624,7 +624,7 @@ func TestRepeatedCrashUnreliable(t *testing.T) {
 	//fmt.Println("aaaaaaaaaaaaaaaaa")
 
 	time.Sleep(20 * time.Second)
-	done = true
+	atomic.StoreInt32(&done, 1)
 
 	for i := 0; i < nth; i++ {
 		ok := <-cha[i]

@@ -297,13 +297,14 @@ func (px *Paxos) sendAccept(seq int, pNum string, v any) bool {
 
 func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 	px.mu.Lock()
+	defer px.mu.Unlock()
+
 	tmp := px.instances[seq]
 	tmp.state = Decided
 	tmp.proposeNum = pNum
 	tmp.acceptNum = pNum
 	tmp.acceptValue = v
 	px.instances[seq] = tmp
-	px.mu.Unlock()
 
 	log.Infof("instance{ state: %v, proposeNum: %v, acceptNum: %v, acceptValue: %v }\n",
 		tmp.state, tmp.proposeNum, tmp.acceptNum, tmp.acceptValue)
@@ -322,7 +323,7 @@ func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 		}
 
 		var reply DecideReply
-		call(peer, "Paxos.Decide", args, &reply)
+		go call(peer, "Paxos.Decide", args, &reply)
 	}
 }
 

@@ -225,7 +225,7 @@ func StartServer(vshost string, me string) *PBServer {
 	// or do anything to subvert it.
 	go func(pb *PBServer) {
 		for atomic.LoadInt32(&pb.dead) == 0 {
-			// log.Debugf("Server: %s still alive, dead: %v", pb.me, pb.dead)
+			log.Debugf("Server: %s still alive, dead: %v", pb.me, pb.dead)
 			conn, err := pb.l.Accept()
 			if err == nil && atomic.LoadInt32(&pb.dead) == 0 {
 				if atomic.LoadInt32(&pb.unreliable) == 1 && (rand.Int63()%1000) < 100 {
