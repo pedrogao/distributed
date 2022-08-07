@@ -3,6 +3,7 @@ package raft
 import (
 	"math/rand"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/pedrogao/log"
@@ -43,4 +44,20 @@ const (
 func getRandomElectTimeout() time.Duration {
 	r := rand.Int63n(electionTimeoutMax-electionTimeoutMin) + electionTimeoutMin
 	return time.Duration(r) * time.Millisecond
+}
+
+// index
+func getMajorIndex(matchIndex []int) int {
+	t := make([]int, len(matchIndex))
+	copy(t, matchIndex)
+	sort.Sort(sort.Reverse(sort.IntSlice(t)))
+	idx := len(t) / 2
+	return t[idx]
+}
+
+func minInt(i int, j int) int {
+	if i < j {
+		return i
+	}
+	return j
 }

@@ -3,7 +3,6 @@ package kvpaxos
 import (
 	"encoding/gob"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"net/rpc"
@@ -13,21 +12,37 @@ import (
 	"syscall"
 
 	"pedrogao/distributed/paxos"
+
+	"github.com/pedrogao/log"
 )
 
-const Debug = 0
+var (
+	// Debug Debugging
+	Debug  = false
+	logger = log.New(log.WithSkipLevel(3))
+)
 
-func DPrintf(format string, a ...any) (n int, err error) {
-	if Debug > 0 {
-		log.Printf(format, a...)
+func init() {
+	if os.Getenv("debug") != "" || Debug {
+		logger.SetOptions(log.WithLevel(log.DebugLevel))
+	} else {
+		logger.SetOptions(log.WithLevel(log.ErrorLevel))
 	}
+}
+
+func DPrintf(format string, a ...any) /*(n int, err error)*/ {
+	logger.Debugf(format, a...)
 	return
 }
 
+// paxos 提案格式
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key   string
+	Value string
+	Type  string // "Put", "Append" or "Get"
 }
 
 type KVPaxos struct {
