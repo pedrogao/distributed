@@ -88,6 +88,8 @@ type Raft struct {
 	matchIndex             []int     // 已同步日志序号，leader 特有
 	commitIndex            int       // 已提交日志序号
 	lastApplied            int       // 已应用日志序号
+	// 2D
+	snapshot []byte
 }
 
 // GetState return currentTerm and whether this server
@@ -142,13 +144,136 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+// 持久化数据，并存储快照
+func (rf *Raft) persistStateAndSnapshot(snapshot []byte) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveStateAndSnapshot(data, snapshot)
+}
+
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+type InstallSnapshotReply struct {
+	Term int
+}
+
+// peer 接受 leader InstallSnapshot 请求
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		return
+	}
+	// Send the entire snapshot in a single InstallSnapshot RPC.
+	// Don't implement Figure 13's offset mechanism for splitting up the snapshot.
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+		rf.persist()
+	}
+	if rf.state != Follower {
+		rf.becomeFollower(args.Term)
+		rf.persist()
+	}
+	rf.leaderId = args.LeaderId
+	rf.lastReceivedFromLeader = time.Now()
+	// 拒绝，如果你的小，证明我已经快照过了，无需再次快照
+	if args.LastIncludedIndex <= rf.log.LastIncludedIndex {
+		return
+	}
+	msg := ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      args.Data,
+		SnapshotTerm:  args.LastIncludedTerm,
+		SnapshotIndex: args.LastIncludedIndex,
+	}
+	go func() {
+		// 应用快照 msg
+		rf.applyCh <- msg
+	}()
+}
+
+// 发送 InstallSnapshot
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
+// sendInstallSnapshotToPeer 向其它 peer 发送快照请求
+func (rf *Raft) sendInstallSnapshotToPeer(peerId int) {
+	rf.mu.Lock()
+	args := InstallSnapshotArgs{
+		Term:              rf.currentTerm,
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.log.LastIncludedIndex,
+		LastIncludedTerm:  rf.log.LastIncludedTerm,
+		Data:              rf.snapshot,
+	}
+	reply := InstallSnapshotReply{}
+	rf.mu.Unlock()
+	ok := rf.sendInstallSnapshot(peerId, &args, &reply)
+	if !ok {
+		return
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// 如果当前的状态不为 leader，那么将不能接受
+	if rf.state != Leader || args.Term != rf.currentTerm {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		// 你的任期大，我成为你的追随者
+		rf.leaderId = peerId
+		rf.persist()
+		return
+	}
+	// 注意，快照和日志同步一样，需要更新 matchIndex 和 nextIndex
+	// 发送完快照后，更新了 matchIndex 和 nextIndex，因此在快照期间的日志同步将需要重新来
+	rf.matchIndex[peerId] = args.LastIncludedIndex
+	rf.nextIndex[peerId] = args.LastIncludedIndex + 1
+}
+
 // CondInstallSnapshot
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // more recent info since it communicate the snapshot on applyCh.
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	// 已快照过了，拒绝
+	if lastIncludedIndex <= rf.commitIndex {
+		return false
+	}
+	// 快照后的处理工作
+	defer func() {
+		rf.log.LastIncludedIndex = lastIncludedIndex
+		rf.log.LastIncludedTerm = lastIncludedTerm
+		rf.snapshot = snapshot
+		rf.commitIndex = lastIncludedIndex
+		rf.lastApplied = lastIncludedIndex
+		rf.persistStateAndSnapshot(snapshot) // 持久化快照
+	}()
+	// 删除掉 lastIncludedIndex 之前的日志记录
+	if lastIncludedIndex <= rf.log.last() && rf.log.entryAt(lastIncludedIndex).Term == lastIncludedTerm {
+		// [rf.log.LastIncludedIndex, lastIncludedIndex) 是当前 snapshot 中的日志数据，所以应该删除
+		// 前面需要一个占位
+		rf.log.Entries = append([]LogEntry{{Term: 0, Command: nil}}, rf.log.Entries[lastIncludedIndex-rf.log.LastIncludedIndex+1:]...)
+		return true
+	}
+	// 快照，删除所有 log entries
+	rf.log.Entries = []LogEntry{{Term: 0, Command: nil}}
 	return true
 }
 
@@ -158,7 +283,17 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// 拒绝快照过的，也拒绝还未提交的
+	if index <= rf.log.LastIncludedIndex || index > rf.commitIndex {
+		return
+	}
+	rf.log.Entries = append([]LogEntry{{Term: 0, Command: nil}}, rf.log.Entries[index-rf.log.LastIncludedIndex+1:]...)
+	rf.log.LastIncludedIndex = index
+	rf.log.LastIncludedTerm = rf.log.entryAt(index).Term
+	rf.snapshot = snapshot
+	rf.persistStateAndSnapshot(snapshot)
 }
 
 // Start
@@ -412,7 +547,12 @@ func (rf *Raft) appendEntriesLoop() {
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
 				continue
 			}
-			go rf.sendAppendEntriesToPeer(peerId)
+			prevLogIndex := rf.nextIndex[peerId] - 1
+			if prevLogIndex < rf.log.LastIncludedIndex {
+				go rf.sendInstallSnapshotToPeer(peerId)
+			} else {
+				go rf.sendAppendEntriesToPeer(peerId)
+			}
 		}
 		rf.mu.Unlock()
 		time.Sleep(heartbeatInterval)
@@ -655,12 +795,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 2B
 	rf.log = defaultRLog()
 	rf.lastReceivedFromLeader = time.Now()
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-
 	// initialize from state persisted before a crash
 	// 读取持久化数据可能会改变任期、投票等数据
 	rf.readPersist(persister.ReadRaftState())
+	// 2D
+	rf.snapshot = persister.ReadSnapshot()
+	rf.commitIndex = rf.log.LastIncludedIndex
+	rf.lastApplied = rf.log.LastIncludedIndex
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
