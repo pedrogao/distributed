@@ -18,12 +18,12 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"pedrogao/distributed/labgob"
+	"pedrogao/distributed/labgob"
 	"pedrogao/distributed/labrpc"
 )
 
@@ -108,14 +108,13 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -125,19 +124,22 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var (
+		currentTerm int
+		votedFor    int
+		log         rLog
+	)
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		DPrintf("decode persisted state err.")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 // CondInstallSnapshot
@@ -189,7 +191,7 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 			Command: command,
 		})
 		DPrintf("peer: %d, index: %d, start command: %+v", rf.me, index, command)
-		// rf.persist()
+		rf.persist()
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
 	}
@@ -241,6 +243,7 @@ func (rf *Raft) ticker() {
 		}
 
 		rf.becomeCandidate()
+		rf.persist()
 		DPrintf("peer: %d become candidate, and begin to vote", rf.me)
 		var votes uint32 = 1 // 自己投给自己的一票
 		for peerId := range rf.peers {
@@ -285,6 +288,7 @@ func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
 	if reply.Term > rf.currentTerm {
 		// 发现任期大的，成为 Follower，然后返回
 		rf.becomeFollower(reply.Term)
+		rf.persist()
 		return
 	}
 	// 没有收到投票
@@ -298,6 +302,7 @@ func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
 	// 如果 len(peers) = 3 / 2 = 1 + 1 = 2，那么至少应该得到 2 票
 	if int(currentVotes) >= (len(rf.peers)/2 + 1) {
 		rf.becomeLeader()
+		rf.persist()
 	}
 }
 
@@ -331,6 +336,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 如果你的任期大，那么我就成为 Follower
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
+		rf.persist()
 	}
 	upToDate := false
 	// 如果两份日志最后的条目的任期号不同，那么任期号大的日志新
@@ -344,6 +350,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && upToDate {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId // 投票后，记得更新 votedFor
+		rf.persist()
 	}
 }
 
@@ -451,6 +458,13 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	if nextIndex <= rf.log.size() {
 		prevLogIndex = nextIndex - 1
 	}
+	// double check，检查 prevLogIndex 与 lastIncludeIndex
+	if rf.log.LastIncludedIndex != 0 && prevLogIndex < rf.log.LastIncludedIndex {
+		DPrintf("peer: %d sendAppendEntriesToPeer but reject, prevLogIndex: %d, lastIncludedIndex: %d",
+			rf.me, prevLogIndex, rf.log.LastIncludedIndex)
+		rf.mu.Unlock()
+		return
+	}
 	prevLogTerm = rf.log.entryAt(prevLogIndex).Term
 	entries = rf.log.getEntries(nextIndex - rf.log.first())
 	args := AppendEntriesArgs{
@@ -462,6 +476,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		LeaderCommit: rf.commitIndex,
 	}
 	reply := AppendEntriesReply{}
+	DPrintf("leader: %d sendAppendEntries to peer: %d, args: %+v", rf.me, peerId, args)
 	rf.mu.Unlock()
 	// 发送 RPC 的时候不要加锁
 	ok := rf.sendAppendEntries(peerId, &args, &reply)
@@ -477,6 +492,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	if reply.Term > rf.currentTerm {
 		rf.becomeFollower(reply.Term)
 		rf.leaderId = peerId
+		rf.persist()
 		return
 	}
 	if reply.Success {
@@ -485,14 +501,32 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		rf.nextIndex[peerId] = rf.matchIndex[peerId] + 1
 		// 2. 计算更新 commitIndex
 		newCommitIndex := getMajorIndex(rf.matchIndex)
-		if newCommitIndex > rf.commitIndex {
+		DPrintf("peer: %d, newCommitIndex: %d, commitIndex: %d", rf.me, newCommitIndex, rf.commitIndex)
+		if newCommitIndex > rf.commitIndex && rf.log.entryAt(newCommitIndex).Term == rf.currentTerm {
+			DPrintf("peer: %d update commitIndex: %d", rf.me, newCommitIndex)
 			rf.commitIndex = newCommitIndex
 		}
 	} else {
-		// 同步失败，回退一步
-		rf.nextIndex[peerId] -= 1
-		if rf.nextIndex[peerId] < 1 {
-			rf.nextIndex[peerId] = 1
+		if reply.ConflictTerm == -1 {
+			rf.nextIndex[peerId] = reply.ConflictIndex
+		} else {
+			// Upon receiving a conflict response, the leader should first search its log for conflictTerm.
+			// If it finds an entry in its log with that term,
+			// it should set nextIndex to be the one beyond the index of the last entry in that term in its log.
+			lastIndexOfTerm := -1
+			for i := rf.log.last(); i >= rf.log.first(); i-- {
+				if rf.log.entryAt(i).Term == reply.ConflictTerm {
+					lastIndexOfTerm = i
+					break
+				}
+			}
+			// If it does not find an entry with that term, it should set nextIndex = conflictIndex.
+			if lastIndexOfTerm < 0 {
+				rf.nextIndex[peerId] = reply.ConflictIndex
+			} else {
+				// 如果找到了冲突的任期，那么 +1 就是下一个需要同步的
+				rf.nextIndex[peerId] = lastIndexOfTerm + 1
+			}
 		}
 	}
 }
@@ -507,8 +541,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // 当前任期号，以便于候选人去更新自己的任期号
-	Success bool // 是否同步成功，true 为成功
+	ConflictTerm  int  // 日志冲突任期
+	ConflictIndex int  // 日志冲突序号
+	Term          int  // 当前任期号，以便于候选人去更新自己的任期号
+	Success       bool // 是否同步成功，true 为成功
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -524,15 +560,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
 		rf.leaderId = args.LeaderId
+		rf.persist()
 	}
 	if rf.state != Follower {
 		rf.becomeFollower(args.Term)
+		rf.persist()
 	}
 	rf.leaderId = args.LeaderId
 	rf.lastReceivedFromLeader = time.Now()
+	if args.PrevLogIndex < rf.log.LastIncludedIndex {
+		reply.ConflictIndex = rf.log.LastIncludedIndex
+		reply.ConflictTerm = -1
+		return
+	}
 	logSize := rf.log.size()
 	// 日志、任期冲突直接返回
-	if args.PrevLogIndex >= logSize || rf.log.entryAt(args.PrevLogIndex).Term != args.PrevLogTerm {
+	if args.PrevLogIndex >= logSize {
+		reply.ConflictIndex = rf.log.size()
+		reply.ConflictTerm = -1
+		return
+	}
+	if rf.log.entryAt(args.PrevLogIndex).Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log.entryAt(args.PrevLogIndex).Term
+		for i := rf.log.first(); i < rf.log.size(); i++ {
+			if rf.log.entryAt(i).Term == reply.ConflictTerm {
+				reply.ConflictIndex = i
+				break
+			}
+		}
 		return
 	}
 	entriesSize := len(args.Entries)
@@ -556,10 +611,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// [0,insertIndex) 是之前已经同步好的日志
 		rf.log.subTo(insertIndex - rf.log.first())
 		rf.log.append(args.Entries[entriesIndex:]...)
+		rf.persist()
 	}
 	// 取两者的最小值
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = minInt(args.LeaderCommit, rf.log.last())
+		DPrintf("peer: %d update commitIndex: %d, leaderCommit: %d, last index: %d",
+			rf.me, rf.commitIndex, args.LeaderCommit, rf.log.last())
 	}
 	reply.Success = true
 }
