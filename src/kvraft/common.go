@@ -1,10 +1,16 @@
 package kvraft
 
+import "time"
+
 const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeout     = "ErrTimeout"
 )
+
+// 默认超时时间
+var defaultTimeout = time.Second * 5
 
 type Err string
 
@@ -16,6 +22,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	CommandId int64 // 命令id，从0递增
+	ClientId  int64 // 客户端id，随机
 }
 
 type PutAppendReply struct {
@@ -25,6 +33,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	CommandId int64 // 命令id，从0递增
+	ClientId  int64 // 客户端id，随机
 }
 
 type GetReply struct {

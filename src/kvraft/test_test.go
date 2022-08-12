@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,7 @@ func Append(cfg *config, ck *Clerk, key string, value string, log *OpLog, cli in
 func check(cfg *config, t *testing.T, ck *Clerk, key string, value string) {
 	v := Get(cfg, ck, key, nil, -1)
 	if v != value {
+		debug.PrintStack()
 		t.Fatalf("Get(%v): expected:\n%v\nreceived:\n%v", key, value, v)
 	}
 }

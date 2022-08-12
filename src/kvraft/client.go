@@ -3,6 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
+	"time"
 
 	"pedrogao/distributed/labrpc"
 )
@@ -10,6 +11,11 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderId int
+	// clientId + commandId 实现线性一致性
+	// 即重复set请求，也能保证 apply 一次
+	commandId int64 // 命令id，从0递增
+	clientId  int64 // 客户端id，随机
 }
 
 func nrand() int64 {
@@ -23,6 +29,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.clientId = nrand() // clerk id
+	ck.leaderId = 0       // servers 中的leaderId，写请求只能走 leader
+	ck.commandId = 0      // 命令id，从 0 递增
 	return ck
 }
 
@@ -39,9 +48,29 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	// leader 都是试出来的
+	args := &GetArgs{
+		Key:       key,
+		CommandId: ck.commandId,
+		ClientId:  ck.clientId,
+	}
+	reply := &GetReply{}
+	// 如果失败，就一直重试
+	internal := time.Millisecond * 100
+	for !ck.servers[ck.leaderId].Call("KVServer.Get", args, reply) ||
+		reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
+		DPrintf("call Get fail from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
+		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		time.Sleep(internal)
+	}
+	// 成功
+	ck.commandId += 1
+	if reply.Err != OK {
+		DPrintf("call Get err from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
+		return ""
+	}
 
-	// You will have to modify this function.
-	return ""
+	return reply.Value
 }
 
 // PutAppend
@@ -55,7 +84,28 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	// leader 都是试出来的
+	args := &PutAppendArgs{
+		Key:       key,
+		Value:     value,
+		Op:        op,
+		CommandId: ck.commandId,
+		ClientId:  ck.clientId,
+	}
+	reply := &PutAppendReply{}
+	// 如果失败，就一直重试
+	internal := time.Millisecond * 100
+	for !ck.servers[ck.leaderId].Call("KVServer.PutAppend", args, reply) ||
+		reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
+		DPrintf("call PutAppend fail from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
+		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		time.Sleep(internal)
+	}
+	// 成功
+	ck.commandId += 1
+	if reply.Err != OK {
+		DPrintf("call PutAppend err from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
