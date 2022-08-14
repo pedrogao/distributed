@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -51,17 +52,17 @@ type Op struct {
 	ClientId  int64
 }
 
-// 每个 client 都需要一个唯一的标识符，它的每个不同命令需要有一个顺序递增的 commandId，clientId 和这个 commandId，
+// 每个 client 都需要一个唯一的标识符，它的每个不同命令需要有一个顺序递增的 CommandId，clientId 和这个 CommandId，
 // clientId 可以唯一确定一个不同的命令，从而使得各个 raft 节点可以记录保存各命令是否已应用以及应用以后的结果。
 type clientRecord struct {
-	commandId int64
-	index     int
-	resp      *clientResp
+	CommandId int64
+	Index     int
+	Resp      *clientResp
 }
 
 type clientResp struct {
-	value string
-	err   Err
+	Value string
+	Err   Err
 }
 
 type KVServer struct {
@@ -117,8 +118,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	select {
 	case resp := <-notify:
 		// 成功同步
-		reply.Value = resp.value
-		reply.Err = resp.err
+		reply.Value = resp.Value
+		reply.Err = resp.Err
 		DPrintf("%d Get Op ok, op: %+v ", kv.Me(), op)
 	case <-time.After(defaultTimeout):
 		// 超时
@@ -141,7 +142,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		// 如果是重复提交
 		record, _ := kv.recordMap.Load(args.ClientId)
 		cr := record.(*clientRecord)
-		reply.Err = cr.resp.err // 使用上次的 resp
+		reply.Err = cr.Resp.Err // 使用上次的 Resp
 		DPrintf("%d PutAppend duplicate, args: %+v, reply: %+v ", kv.Me(), args, reply)
 		return
 	}
@@ -174,7 +175,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	select {
 	case resp := <-notify: // 阻塞
 		// 成功同步
-		reply.Err = resp.err
+		reply.Err = resp.Err
 		DPrintf("%d PutAppend Op ok, op: %+v ", kv.Me(), op)
 	case <-time.After(defaultTimeout):
 		// 超时
@@ -200,7 +201,7 @@ func (kv *KVServer) isLatestRequest(clientId, commandId int64) bool {
 	cr := record.(*clientRecord)
 	// 等于：当前请求重复提交
 	// 小于：以前的请求重复提交
-	return commandId <= cr.commandId
+	return commandId <= cr.CommandId
 }
 
 func (kv *KVServer) apply() {
@@ -226,42 +227,42 @@ func (kv *KVServer) apply() {
 				case GetAction:
 					val, exists := kv.store.Load(command.Key) // 读取数据
 					if !exists {
-						resp.err = ErrNoKey
+						resp.Err = ErrNoKey
 					} else {
-						resp.err = OK
-						resp.value = val.(string)
+						resp.Err = OK
+						resp.Value = val.(string)
 					}
-					DPrintf("%d apply op successful, action: %+v, resp: %+v ", kv.Me(), command.Action, resp)
+					DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 				case PutAction, AppendAction: // put 更新，append 添加
 					if kv.isLatestRequest(clientId, commandId) {
 						// 如果是重复提交
 						record, _ := kv.recordMap.Load(clientId)
-						resp = record.(*clientRecord).resp // 使用上次的 resp
-						DPrintf("%d apply op exists, action: %+v, resp: %+v ", kv.Me(), command.Action, resp)
+						resp = record.(*clientRecord).Resp // 使用上次的 Resp
+						DPrintf("%d apply op exists, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					} else {
 						// 非重复提交
-						// 相同的 clientId、commandId 日志虽然会被提交
+						// 相同的 clientId、CommandId 日志虽然会被提交
 						// 但是只会 apply 一次，这样就不会因 apply 多次而出现数据问题
 						// 所以 client 的最后一次请求必须记住
-						resp.value = command.Value
-						resp.err = OK
+						resp.Value = command.Value
+						resp.Err = OK
 						record := &clientRecord{
-							commandId: commandId,
-							index:     index,
-							resp:      resp,
+							CommandId: commandId,
+							Index:     index,
+							Resp:      resp,
 						}
 						kv.recordMap.Store(clientId, record)
 						// 更新 store
 						// 注意：Append 是追加，put 是更新
 						old, exist := kv.store.Load(command.Key)
 						if command.Action == AppendAction && exist {
-							// 如果是 append 且已存在，那么将 value 追加到后面
+							// 如果是 append 且已存在，那么将 Value 追加到后面
 							kv.store.Store(command.Key, old.(string)+command.Value)
 						} else {
 							// 否则统一当成 put 处理
 							kv.store.Store(command.Key, command.Value)
 						}
-						DPrintf("%d apply op successful, action: %+v, resp: %+v ", kv.Me(), command.Action, resp)
+						DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					}
 				}
 				// leader回应客户端请求
@@ -273,7 +274,7 @@ func (kv *KVServer) apply() {
 				if term == message.CommandTerm && isLeader {
 					// 注意：只有 leader 会收到请求
 					notify, exist := kv.notifyMap.Load(index)
-					DPrintf("%d notify op, exist: %+v, action: %+v, resp: %+v ", kv.Me(), exist, command.Action, resp)
+					DPrintf("%d notify op, exist: %+v, action: %+v, Resp: %+v ", kv.Me(), exist, command.Action, resp)
 					if exist {
 						// 为啥在任期一致且是leader的情况下，会存在 notify 不存在的情况了？
 						// 超时会删除 notify，因此重试的时候会找不到
@@ -282,11 +283,69 @@ func (kv *KVServer) apply() {
 				}
 			} else if message.SnapshotValid {
 				// TODO
+				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex,
+					message.Snapshot) {
+					// TODO
+				}
 			} else {
 				log.Fatalf("invalid message: %+v", message)
 			}
 		}
 	}
+}
+
+func (kv *KVServer) snapshot() {
+	// 无需快照
+	if kv.maxraftstate < 0 {
+		return
+	}
+
+	for !kv.killed() {
+		// TODO
+	}
+}
+
+func (kv *KVServer) writeSnapshot() []byte {
+	w := &bytes.Buffer{}
+	e := labgob.NewEncoder(w)
+
+	m1 := mapUnSync(&kv.store)
+	err := e.Encode(m1)
+	if err != nil {
+		return nil
+	}
+
+	m2 := mapUnSync(&kv.recordMap)
+	err = e.Encode(m2)
+	if err != nil {
+		return nil
+	}
+
+	return w.Bytes()
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	r1 := map[any]any{} // kv存储
+	r2 := map[any]any{} // 操作记录
+
+	err := d.Decode(r1)
+	if err != nil {
+		return
+	}
+
+	err = d.Decode(r2)
+	if err != nil {
+		return
+	}
+
+	kv.store = *mapSync(r1)
+	kv.recordMap = *mapSync(r2)
 }
 
 func (kv *KVServer) Kill() {
@@ -302,8 +361,8 @@ func (kv *KVServer) killed() bool {
 // StartKVServer
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
-// form the fault-tolerant key/value service.
-// I am the index of the current server in servers[].
+// form the fault-tolerant key/Value service.
+// I am the Index of the current server in servers[].
 // the k/v server should store snapshots through the underlying Raft
 // implementation, which should call persister.SaveStateAndSnapshot() to
 // atomically save the Raft state along with the snapshot.
@@ -332,6 +391,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.recordMap = sync.Map{}
 	kv.notifyMap = sync.Map{}
 	go kv.apply()
+	go kv.snapshot()
 
 	return kv
 }

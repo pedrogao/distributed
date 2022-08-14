@@ -36,7 +36,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 }
 
 // Get
-// fetch the current value for a key.
+// fetch the current Value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
@@ -80,7 +80,7 @@ func (ck *Clerk) Get(key string) string {
 			DPrintf("call Get ok from leader: %d, args: %+v, reply: %+v ", leaderId, args, reply)
 			return reply.Value
 		}
-		DPrintf("call Get err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
+		DPrintf("call Get Err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
 	}
 }
 
@@ -125,7 +125,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			DPrintf("call PutAppend ok from leader: %d, args: %+v, reply: %+v ", leaderId, args, reply)
 			return
 		}
-		DPrintf("call PutAppend err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
+		DPrintf("call PutAppend Err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
 	}
 }
 
