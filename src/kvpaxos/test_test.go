@@ -1,14 +1,16 @@
 package kvpaxos
 
-import "testing"
-import "runtime"
-import "strconv"
-import "os"
-import "time"
-import "fmt"
-import "math/rand"
-import "strings"
-import "sync/atomic"
+import (
+	"fmt"
+	"math/rand"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func check(t *testing.T, ck *Clerk, key string, value string) {
 	v := ck.Get(key)
@@ -88,7 +90,7 @@ func TestBasic(t *testing.T) {
 			ca[nth] = make(chan bool)
 			go func(me int) {
 				defer func() { ca[me] <- true }()
-				ci := (rand.Int() % nservers)
+				ci := rand.Int() % nservers
 				myck := MakeClerk([]string{kvh[ci]})
 				if (rand.Int() % 1000) < 500 {
 					myck.Put("b", strconv.Itoa(rand.Int()))
@@ -642,7 +644,7 @@ func TestManyPartition(t *testing.T) {
 		for atomic.LoadInt32(&done) == 0 {
 			var a [nservers]int
 			for i := 0; i < nservers; i++ {
-				a[i] = (rand.Int() % 3)
+				a[i] = rand.Int() % 3
 			}
 			pa := make([][]int, 3)
 			for i := 0; i < 3; i++ {

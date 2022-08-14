@@ -295,6 +295,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 					v := Get(cfg, myck, key, opLog, cli)
 					// the following check only makes sense when we're not using random keys
 					if !randomkeys && v != last {
+						debug.PrintStack()
 						t.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
 					}
 				}
@@ -328,7 +329,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			for i := 0; i < nservers; i++ {
 				cfg.ShutdownServer(i)
 			}
-			// Wait for a while for servers to shutdown, since
+			// Wait for a while for servers to shut down, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
 			// log.Printf("restart servers\n")
@@ -359,6 +360,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			// requests and had time to checkpoint.
 			sz := cfg.LogSize()
 			if sz > 8*maxraftstate {
+				debug.PrintStack()
 				t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
 			}
 		}
@@ -366,6 +368,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			// Check that snapshots are not used
 			ssz := cfg.SnapshotSize()
 			if ssz > 0 {
+				debug.PrintStack()
 				t.Fatalf("snapshot too large (%v), should not be used when maxraftstate = %d", ssz, maxraftstate)
 			}
 		}

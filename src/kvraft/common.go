@@ -6,11 +6,13 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrNoLeader    = "ErrNoLeader" // leader还没被选出来
 	ErrTimeout     = "ErrTimeout"
+	ErrShutdown    = "ErrShutdown"
 )
 
 // 默认超时时间
-var defaultTimeout = time.Second * 5
+var defaultTimeout = time.Second * 3
 
 type Err string
 

@@ -14,6 +14,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      any
 	CommandIndex int
+	CommandTerm  int // 3A
 
 	// For 2D:
 	SnapshotValid bool
@@ -127,7 +128,7 @@ type InstallSnapshotReply struct {
 	Term int
 }
 
-// peer 接受 leader InstallSnapshot 请求
+// InstallSnapshot peer 接受 leader InstallSnapshot 请求
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -497,6 +498,7 @@ func (rf *Raft) applyLogLoop() {
 				CommandValid: true,
 				Command:      rf.log.entryAt(rf.lastApplied).Command,
 				CommandIndex: rf.lastApplied,
+				CommandTerm:  rf.currentTerm, // 3A
 			}
 			msgs = append(msgs, msg)
 		}

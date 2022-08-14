@@ -27,9 +27,8 @@ func init() {
 	}
 }
 
-func DPrintf(format string, a ...any) /*(n int, err error)*/ {
+func DPrintf(format string, a ...any) {
 	logger.Debugf(format, a...)
-	return
 }
 
 type Action = string
@@ -44,9 +43,10 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Action    string
-	Key       string
-	Value     string
+	Action string
+	Key    string
+	Value  string
+
 	CommandId int64
 	ClientId  int64
 }
@@ -55,9 +55,7 @@ type Op struct {
 // clientId 可以唯一确定一个不同的命令，从而使得各个 raft 节点可以记录保存各命令是否已应用以及应用以后的结果。
 type clientRecord struct {
 	commandId int64
-	applied   bool
 	index     int
-	term      int
 	resp      *clientResp
 }
 
@@ -77,49 +75,45 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	store     map[string]string       // kv存储
-	recordMap map[int64]*clientRecord // 客户端最后操作记录
-	notifyMap map[int64]chan *clientResp
+	store       map[string]string       // kv存储
+	recordMap   map[int64]*clientRecord // 操作记录
+	notifyMap   map[int64]chan *clientResp
+	lastApplied int // 最后已应用 command
 }
 
-// 如果 kvserver 不是多数的一部分，则不应完成 Get() RPC（这样它就不会提供陈旧的数据）。
+// Get 如果 kvserver 不是多数的一部分，则不应完成 Get() RPC（这样它就不会提供陈旧的数据）。
 // 一个简单的解决方案是在 Raft 日志中输入每个 Get()（以及每个 Put() 和 Append()）。
 // Get 也需要提交 raft 日志，保证客户端不会读到脏数据
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	key := args.Key
-	// 检查重复？
+	if kv.killed() {
+		reply.Err = ErrShutdown
+		return
+	}
 
-	// val, exists := kv.store[key]
-	// if !exists {
-	// 	reply.Err = ErrNoKey
-	// 	return
-	// }
+	// submit op
 	op := Op{
 		Action:    GetAction,
-		Key:       key,
+		Key:       args.Key,
 		CommandId: args.CommandId,
 		ClientId:  args.ClientId,
 	}
-	index, term, isLeader := kv.rf.Start(op)
+	_, term, isLeader := kv.rf.Start(op)
+	if term == 0 { // term = 0 的时候，leader 还没选出来
+		DPrintf("%d Get no leader, args: %+v, reply: %+v ", kv.me, args, reply)
+		reply.Err = ErrNoLeader
+		return
+	}
 	if !isLeader {
+		DPrintf("%d Get wrong leader, args: %+v, reply: %+v ", kv.me, args, reply)
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	record := &clientRecord{
-		commandId: args.CommandId,
-		applied:   false,
-		index:     index,
-		term:      term,
-	}
+	// get 请求是无需判断重复的，因为天然就无需 apply 多次，本身就具有幂等性
 	kv.mu.Lock()
-	kv.recordMap[args.ClientId] = record
-	notify, ok := kv.notifyMap[args.ClientId]
-	if !ok {
-		notify = make(chan *clientResp, 1)
-		kv.notifyMap[args.ClientId] = notify
-	}
+	notify := make(chan *clientResp)
+	kv.notifyMap[args.ClientId] = notify
 	kv.mu.Unlock() // 解锁
 
 	select {
@@ -127,34 +121,29 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		// 成功同步
 		reply.Value = resp.value
 		reply.Err = resp.err
+		DPrintf("%d Get Op ok, op: %+v ", kv.me, op)
 	case <-time.After(defaultTimeout):
 		// 超时
 		reply.Err = ErrTimeout
+		DPrintf("%d Get Op timeout, op: %+v ", kv.me, op)
 	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// FIXME 如果第一次出错了，就会导致后续的所有均返回同一个错误
-	if kv.isDuplicateRequest(args.ClientId, args.CommandId) {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		record := kv.recordMap[args.ClientId]
-		defer DPrintf("%d PutAppend dumplicate, args: %v, reply: %v ", kv.me, args, reply)
-		if record.resp == nil {
-			reply.Err = ErrWrongLeader
-			return
-		}
-		reply.Err = record.resp.err // 此时 op 还没 apply，所以没有 resp
+	if kv.killed() {
+		reply.Err = ErrShutdown
 		return
 	}
 
-	kv.mu.Lock()
-	notify, ok := kv.notifyMap[args.ClientId]
-	if !ok {
-		notify = make(chan *clientResp, 1)
-		kv.notifyMap[args.ClientId] = notify
+	if kv.isLatestRequest(args.ClientId, args.CommandId) {
+		// 如果是重复提交
+		kv.mu.Lock()
+		record := kv.recordMap[args.ClientId]
+		defer DPrintf("%d PutAppend duplicate, args: %+v, reply: %+v ", kv.me, args, reply)
+		reply.Err = record.resp.err // 使用上次的 resp
+		kv.mu.Unlock()
+		return
 	}
-	kv.mu.Unlock() // 解锁
 
 	argOp := args.Op
 	op := Op{
@@ -164,41 +153,47 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		CommandId: args.CommandId,
 		ClientId:  args.ClientId,
 	}
-	index, term, isLeader := kv.rf.Start(op)
+	_, term, isLeader := kv.rf.Start(op)
+	if term == 0 {
+		DPrintf("%d PutAppend no leader, args: %+v, reply: %+v ", kv.me, args, reply)
+		reply.Err = ErrNoLeader
+		return
+	}
 	if !isLeader {
-		DPrintf("%d PutAppend wrong leader, args: %v, reply: %v ", kv.me, args, reply)
+		DPrintf("%d PutAppend wrong leader, args: %+v, reply: %+v ", kv.me, args, reply)
 		reply.Err = ErrWrongLeader
 		return
 	}
-	DPrintf("%d PutAppend Op successful, op: %v ", kv.me, op)
-	record := &clientRecord{
-		commandId: args.CommandId,
-		applied:   false,
-		index:     index,
-		term:      term,
-	}
+	DPrintf("%d PutAppend Op successful, op: %+v ", kv.me, op)
+
+	// 只有 leader 需要 notify 客户端
+	notify := make(chan *clientResp)
 	kv.mu.Lock()
-	kv.recordMap[args.ClientId] = record
-	kv.mu.Unlock() // 解锁
-	// TODO Start Op 成功后，应该等待服务同步完成
+	kv.notifyMap[args.ClientId] = notify
+	kv.mu.Unlock()
+
 	select {
 	case resp := <-notify: // 阻塞
 		// 成功同步
 		reply.Err = resp.err
+		DPrintf("%d PutAppend Op ok, op: %+v ", kv.me, op)
 	case <-time.After(defaultTimeout):
 		// 超时
+		DPrintf("%d PutAppend Op timeout, op: %+v ", kv.me, op)
 		reply.Err = ErrTimeout
 	}
 }
 
-func (kv *KVServer) isDuplicateRequest(clientId, commandId int64) bool {
+func (kv *KVServer) isLatestRequest(clientId, commandId int64) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	record, ok := kv.recordMap[clientId]
 	if !ok {
 		return false
 	}
-	return record.commandId == commandId
+	// 等于：当前请求重复提交
+	// 小于：以前的请求重复提交
+	return commandId <= record.commandId
 }
 
 func (kv *KVServer) apply() {
@@ -206,10 +201,19 @@ func (kv *KVServer) apply() {
 		select {
 		case message := <-kv.applyCh:
 			if message.CommandValid {
-				// index := message.CommandIndex
+				index := message.CommandIndex
+				kv.mu.Lock()
+				if index <= kv.lastApplied {
+					DPrintf("%d discard apply op, message: %+v, lastApplied: %+v ", kv.me, message, kv.lastApplied)
+					kv.mu.Unlock()
+					continue
+				}
+				kv.lastApplied = index
+				kv.mu.Unlock()
+
 				command, ok := message.Command.(Op)
 				if !ok {
-					log.Fatalf("invalid message command: %v", message.Command)
+					log.Fatalf("invalid message command: %+v", message.Command)
 				}
 				clientId := command.ClientId
 				commandId := command.CommandId
@@ -217,35 +221,72 @@ func (kv *KVServer) apply() {
 				case GetAction:
 					resp := &clientResp{}
 					kv.mu.Lock()
-					notify := kv.notifyMap[clientId]
-					val, exists := kv.store[command.Key]
+					notify := kv.notifyMap[clientId]     // 通知
+					val, exists := kv.store[command.Key] // 读取数据
 					kv.mu.Unlock()
+
 					if !exists {
 						resp.err = ErrNoKey
 					} else {
+						resp.err = OK
 						resp.value = val
 					}
-					DPrintf("%d apply op successful, action: %v, resp: %v ", kv.me, command.Action, resp)
+					DPrintf("%d apply op successful, action: %+v, resp: %+v ", kv.me, command.Action, resp)
 					notify <- resp
 				case PutAction, AppendAction: // put 更新，append 添加
 					resp := &clientResp{}
-					kv.mu.Lock()
-					notify := kv.notifyMap[clientId]
-					kv.store[command.Key] = command.Value
-					resp.value = command.Value
-					record, exists := kv.recordMap[clientId]
-					if exists && record.commandId == commandId {
-						record.resp = resp
+					if kv.isLatestRequest(clientId, commandId) {
+						// 如果是重复提交
+						kv.mu.Lock()
+						record := kv.recordMap[clientId]
+						resp = record.resp // 使用上次的 resp
+						DPrintf("%d apply op exists, action: %+v, resp: %+v ", kv.me, command.Action, resp)
+						kv.mu.Unlock()
+					} else {
+						// 非重复提交
+						kv.mu.Lock()
+						// 相同的 clientId、commandId 日志虽然会被提交
+						// 但是只会 apply 一次，这样就不会因 apply 多次而出现数据问题
+						// 所以 client 的最后一次请求必须记住
+						resp.value = command.Value
+						resp.err = OK
+						record := &clientRecord{
+							commandId: commandId,
+							index:     index,
+							resp:      resp,
+						}
+						kv.recordMap[clientId] = record
+						// 更新 store
+						// 注意：Append 是追加，put 是更新
+						old, exist := kv.store[command.Key]
+						if command.Action == AppendAction && exist {
+							// 如果是 append 且已存在，那么将 value 追加到后面
+							kv.store[command.Key] = old + command.Value
+						} else {
+							// 否则统一当成 put 处理
+							kv.store[command.Key] = command.Value
+						}
+						DPrintf("%d apply op successful, action: %+v, resp: %+v ", kv.me, command.Action, resp)
+						kv.mu.Unlock()
 					}
-					kv.mu.Unlock()
-					DPrintf("%d apply op successful, action: %v, resp: %v ", kv.me, command.Action, resp)
-					notify <- resp
+					// leader回应客户端请求
+					term, isLeader := kv.rf.GetState()
+					// 任期相同，且是 leader 才需要通过对应的客户端
+					// 为啥需要任期？
+					// 因此 leader 可能前一秒是，下一次可能就不是了
+					// 节点状态发生了变更，那么 term 肯定会变，因此需要判断
+					if term == message.CommandTerm && isLeader {
+						// 注意：只有 leader 会收到请求
+						notify := kv.notifyMap[clientId]
+						DPrintf("%d notify op, action: %+v, resp: %+v ", kv.me, command.Action, resp)
+						notify <- resp
+					}
 					// case AppendAction:
 				}
 			} else if message.SnapshotValid {
 				// TODO
 			} else {
-				log.Fatalf("invalid message: %v", message)
+				log.Fatalf("invalid message: %+v", message)
 			}
 		}
 	}
@@ -265,7 +306,7 @@ func (kv *KVServer) killed() bool {
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
-// me is the index of the current server in servers[].
+// I am the index of the current server in servers[].
 // the k/v server should store snapshots through the underlying Raft
 // implementation, which should call persister.SaveStateAndSnapshot() to
 // atomically save the Raft state along with the snapshot.

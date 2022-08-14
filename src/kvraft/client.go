@@ -54,23 +54,34 @@ func (ck *Clerk) Get(key string) string {
 		CommandId: ck.commandId,
 		ClientId:  ck.clientId,
 	}
-	reply := &GetReply{}
-	// 如果失败，就一直重试
-	internal := time.Millisecond * 100
-	for !ck.servers[ck.leaderId].Call("KVServer.Get", args, reply) ||
-		reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
-		DPrintf("call Get fail from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
-		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-		time.Sleep(internal)
-	}
-	// 成功
 	ck.commandId += 1
-	if reply.Err != OK {
-		DPrintf("call Get err from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
-		return ""
+	reply := &GetReply{}
+	leaderId := ck.leaderId
+	// 如果失败，就一直重试
+	internal := time.Millisecond * 10
+	for {
+		ok := ck.servers[leaderId].Call("KVServer.Get", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown {
+			DPrintf("call Get fail from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
+			leaderId = (leaderId + 1) % len(ck.servers)
+			continue
+		}
+		// 还没有选出 leader，休眠一会儿
+		if reply.Err == ErrNoLeader {
+			time.Sleep(internal)
+			continue
+		}
+		ck.leaderId = leaderId // update
+		if reply.Err == ErrNoKey {
+			DPrintf("call Get no key from leader: %d, args: %+v, reply: %+v ", leaderId, args, reply)
+			return ""
+		}
+		if reply.Err == OK {
+			DPrintf("call Get ok from leader: %d, args: %+v, reply: %+v ", leaderId, args, reply)
+			return reply.Value
+		}
+		DPrintf("call Get err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
 	}
-
-	return reply.Value
 }
 
 // PutAppend
@@ -92,19 +103,29 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		CommandId: ck.commandId,
 		ClientId:  ck.clientId,
 	}
+	ck.commandId += 1
+	leaderId := ck.leaderId
 	reply := &PutAppendReply{}
 	// 如果失败，就一直重试
-	internal := time.Millisecond * 100
-	for !ck.servers[ck.leaderId].Call("KVServer.PutAppend", args, reply) ||
-		reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
-		DPrintf("call PutAppend fail from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
-		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-		time.Sleep(internal)
-	}
-	// 成功
-	ck.commandId += 1
-	if reply.Err != OK {
-		DPrintf("call PutAppend err from leader: %d, try again, args: %v, reply: %v ", ck.leaderId, args, reply)
+	internal := time.Millisecond * 10
+	for {
+		ok := ck.servers[leaderId].Call("KVServer.PutAppend", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown {
+			DPrintf("call PutAppend fail from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
+			leaderId = (leaderId + 1) % len(ck.servers)
+			continue
+		}
+		// 还没有选出 leader，休眠一会儿
+		if reply.Err == ErrNoLeader {
+			time.Sleep(internal)
+			continue
+		}
+		ck.leaderId = leaderId // update
+		if reply.Err == OK {
+			DPrintf("call PutAppend ok from leader: %d, args: %+v, reply: %+v ", leaderId, args, reply)
+			return
+		}
+		DPrintf("call PutAppend err from leader: %d, try again, args: %+v, reply: %+v ", leaderId, args, reply)
 	}
 }
 
