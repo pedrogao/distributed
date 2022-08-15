@@ -74,6 +74,7 @@ type KVServer struct {
 
 	// if maxraftstate is -1,  you don't need to snapshot.
 	maxraftstate int // snapshot if log grows this big
+	persister    *raft.Persister
 
 	// Your definitions here.
 	store       sync.Map // kv存储
@@ -281,11 +282,18 @@ func (kv *KVServer) apply() {
 						notify.(chan *clientResp) <- resp
 					}
 				}
+				// leader 写 snapshot
+				if kv.needSnapshot() {
+					kv.doSnapshot(index)
+				}
 			} else if message.SnapshotValid {
-				// TODO
+				DPrintf("%d request for snapshot, message: %+v ", kv.Me(), message)
 				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex,
 					message.Snapshot) {
-					// TODO
+					DPrintf("%d request for snapshot successful, message: %+v ", kv.Me(), message)
+					// follower 读快照
+					kv.readSnapshot(message.Snapshot)                                // 读取快照数据，store & record
+					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
 				}
 			} else {
 				log.Fatalf("invalid message: %+v", message)
@@ -294,15 +302,21 @@ func (kv *KVServer) apply() {
 	}
 }
 
-func (kv *KVServer) snapshot() {
-	// 无需快照
-	if kv.maxraftstate < 0 {
-		return
-	}
+func (kv *KVServer) needSnapshot() bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
-	for !kv.killed() {
-		// TODO
+	if kv.maxraftstate < 0 {
+		return false
 	}
+	sz := kv.persister.RaftStateSize() // 与 maxraftstate 比较，判断是否需要快照
+	return sz > kv.maxraftstate
+}
+
+func (kv *KVServer) doSnapshot(index int) {
+	DPrintf("%d do snapshot, index: %d ", kv.Me(), index)
+	snapshotBytes := kv.writeSnapshot()
+	kv.rf.Snapshot(index, snapshotBytes)
 }
 
 func (kv *KVServer) writeSnapshot() []byte {
@@ -344,6 +358,8 @@ func (kv *KVServer) readSnapshot(data []byte) {
 		return
 	}
 
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.store = *mapSync(r1)
 	kv.recordMap = *mapSync(r2)
 }
@@ -380,6 +396,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.persister = persister
 
 	// You may need initialization code here.
 
@@ -390,8 +407,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.store = sync.Map{}
 	kv.recordMap = sync.Map{}
 	kv.notifyMap = sync.Map{}
+	// apply & snapshot loop
 	go kv.apply()
-	go kv.snapshot()
 
 	return kv
 }
