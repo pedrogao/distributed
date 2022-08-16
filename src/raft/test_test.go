@@ -11,6 +11,7 @@ package raft
 import (
 	"fmt"
 	"math/rand"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1154,6 +1155,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 
 		if cfg.LogSize() >= MAXLOGSIZE {
+			debug.PrintStack()
 			cfg.t.Fatalf("Log size too large")
 		}
 		if disconnect {

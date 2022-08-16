@@ -15,7 +15,7 @@ const (
 )
 
 // 默认超时时间
-var defaultTimeout = time.Second * 3
+var defaultTimeout = time.Millisecond * 500
 
 type Err string
 

@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -167,7 +168,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	DPrintf("%d PutAppend Op successful, op: %+v ", kv.Me(), op)
+	DPrintf("%d PutAppend Op committed, op: %+v, index: %d", kv.Me(), op, index)
 
 	// 只有 leader 需要 notify 客户端
 	notify := make(chan *clientResp)
@@ -209,14 +210,13 @@ func (kv *KVServer) apply() {
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
+			DPrintf("%d handle apply message: %+v ", kv.Me(), message.CommandIndex)
 			if message.CommandValid {
 				index := message.CommandIndex
 				if int64(index) <= atomic.LoadInt64(&kv.lastApplied) {
 					DPrintf("%d discard apply op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
 					continue
 				}
-				atomic.StoreInt64(&kv.lastApplied, int64(index))
-
 				command, ok := message.Command.(Op)
 				if !ok {
 					log.Fatalf("invalid message command: %+v", message.Command)
@@ -282,18 +282,34 @@ func (kv *KVServer) apply() {
 						notify.(chan *clientResp) <- resp
 					}
 				}
-				// leader 写 snapshot
+				// 记录 lastApplied
+				atomic.StoreInt64(&kv.lastApplied, int64(index))
+				//  写 snapshot
 				if kv.needSnapshot() {
 					kv.doSnapshot(index)
 				}
 			} else if message.SnapshotValid {
+				if int64(message.SnapshotIndex) < atomic.LoadInt64(&kv.lastApplied) {
+					DPrintf("%d discard snapshot op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
+					continue
+				}
 				DPrintf("%d request for snapshot, message: %+v ", kv.Me(), message)
 				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex,
 					message.Snapshot) {
 					DPrintf("%d request for snapshot successful, message: %+v ", kv.Me(), message)
 					// follower 读快照
-					kv.readSnapshot(message.Snapshot)                                // 读取快照数据，store & record
+					err := kv.readSnapshot(message.Snapshot) // 读取快照数据，store & record
+					if err != nil {
+						log.Fatalf("read snapshot err: %+v", message)
+					}
 					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
+					// 清空 notify
+					kv.notifyMap.Range(func(key, notify any) bool {
+						notify.(chan *clientResp) <- &clientResp{
+							Err: ErrWrongLeader,
+						}
+						return true
+					})
 				}
 			} else {
 				log.Fatalf("invalid message: %+v", message)
@@ -310,37 +326,41 @@ func (kv *KVServer) needSnapshot() bool {
 		return false
 	}
 	sz := kv.persister.RaftStateSize() // 与 maxraftstate 比较，判断是否需要快照
-	return sz > kv.maxraftstate
+	DPrintf("%d need snapshot, sz: %d, maxraftstate: %d ", kv.Me(), sz, kv.maxraftstate)
+	return sz > int(float32(kv.maxraftstate)*0.9)
 }
 
 func (kv *KVServer) doSnapshot(index int) {
 	DPrintf("%d do snapshot, index: %d ", kv.Me(), index)
-	snapshotBytes := kv.writeSnapshot()
+	snapshotBytes, err := kv.writeSnapshot()
+	if err != nil {
+		log.Fatalf("doSnawriteSnapshot err: %+v", err)
+	}
 	kv.rf.Snapshot(index, snapshotBytes)
 }
 
-func (kv *KVServer) writeSnapshot() []byte {
-	w := &bytes.Buffer{}
+func (kv *KVServer) writeSnapshot() ([]byte, error) {
+	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
 	m1 := mapUnSync(&kv.store)
 	err := e.Encode(m1)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	m2 := mapUnSync(&kv.recordMap)
 	err = e.Encode(m2)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
-	return w.Bytes()
+	return w.Bytes(), nil
 }
 
-func (kv *KVServer) readSnapshot(data []byte) {
+func (kv *KVServer) readSnapshot(data []byte) error {
 	if len(data) == 0 {
-		return
+		return fmt.Errorf("snapshot data empty")
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
@@ -350,18 +370,19 @@ func (kv *KVServer) readSnapshot(data []byte) {
 
 	err := d.Decode(r1)
 	if err != nil {
-		return
+		return err
 	}
 
 	err = d.Decode(r2)
 	if err != nil {
-		return
+		return err
 	}
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.store = *mapSync(r1)
 	kv.recordMap = *mapSync(r2)
+	return nil
 }
 
 func (kv *KVServer) Kill() {
@@ -392,6 +413,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(&clientRecord{})
+	labgob.Register(&clientResp{})
 
 	kv := new(KVServer)
 	kv.me = me

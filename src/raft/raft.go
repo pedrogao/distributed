@@ -246,9 +246,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if index <= rf.log.LastIncludedIndex || index > rf.commitIndex {
 		return
 	}
+	// IMPORTANT 必须在日志截断前先设置 index、term，否则会被截断掉真实信息
+	lastIncludedTerm := rf.log.entryAt(index).Term
 	rf.log.Entries = append([]LogEntry{{Term: 0, Command: nil}}, rf.log.Entries[index-rf.log.LastIncludedIndex+1:]...)
+	rf.log.LastIncludedTerm = lastIncludedTerm
 	rf.log.LastIncludedIndex = index
-	rf.log.LastIncludedTerm = rf.log.entryAt(index).Term
 	rf.snapshot = snapshot
 	rf.persistStateAndSnapshot(snapshot)
 }

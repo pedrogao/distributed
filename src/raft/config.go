@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"math/rand"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -449,6 +450,7 @@ func (cfg *config) checkOneLeader() int {
 		lastTermWithLeader := -1
 		for term, leaders := range leaders {
 			if len(leaders) > 1 {
+				debug.PrintStack()
 				cfg.t.Fatalf("term %d has %d (>1) leaders", term, len(leaders))
 			}
 			if term > lastTermWithLeader {
@@ -460,6 +462,7 @@ func (cfg *config) checkOneLeader() int {
 			return leaders[lastTermWithLeader][0]
 		}
 	}
+	debug.PrintStack()
 	cfg.t.Fatalf("expected one leader, got none")
 	return -1
 }
@@ -602,6 +605,7 @@ func (cfg *config) one(cmd any, expectedServers int, retry bool) int {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
+				debug.PrintStack()
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {
@@ -609,6 +613,7 @@ func (cfg *config) one(cmd any, expectedServers int, retry bool) int {
 		}
 	}
 	if cfg.checkFinished() == false {
+		debug.PrintStack()
 		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	}
 	return -1
