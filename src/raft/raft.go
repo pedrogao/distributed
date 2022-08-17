@@ -464,16 +464,21 @@ func (rf *Raft) appendEntriesLoop() {
 		}
 
 		for peerId := range rf.peers {
+			// 当前节点
 			if peerId == rf.me {
 				// 更新自己的 nextIndex 和 matchIndex
 				rf.nextIndex[peerId] = rf.log.size()
-				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
+				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
 				continue
 			}
-			prevLogIndex := rf.nextIndex[peerId] - 1
+			// 其它节点
+			prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
 			if prevLogIndex < rf.log.LastIncludedIndex {
+				// 已同步完成的序号小于	matchIndex 的，发送快照
+				// 因此快照已经覆盖了要发送的日志
 				go rf.sendInstallSnapshotToPeer(peerId)
 			} else {
+				// 大于的，仍发送日志
 				go rf.sendAppendEntriesToPeer(peerId)
 			}
 		}
@@ -499,37 +504,47 @@ func (rf *Raft) applyLogLoop() {
 				CommandValid: true,
 				Command:      rf.log.entryAt(rf.lastApplied).Command,
 				CommandIndex: rf.lastApplied,
-				CommandTerm:  rf.currentTerm, // 3A
+				CommandTerm:  rf.log.entryAt(rf.lastApplied).Term, // 3A
 			}
 			msgs = append(msgs, msg)
 		}
+		DPrintf("peer: %d, commit index: %d, last applied: %d, send msgs: %+v",
+			rf.me, rf.commitIndex, rf.lastApplied, msgs)
 		rf.mu.Unlock()
 		for _, msg := range msgs {
-			// DPrintf("peer: %d, commit index: %d, last applied: %d, send msg: %v",
-			// 	rf.me, rf.commitIndex, rf.lastApplied, msg)
 			rf.applyCh <- msg
 		}
 	}
 }
 
+// refer: https://bloodhunter.github.io/2019/03/31/raft-xie-yi-zhi-ri-zhi-fu-zhi/
+// refer: https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
 func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	rf.mu.Lock()
-	nextIndex := rf.nextIndex[peerId]
-	prevLogTerm := 0
-	prevLogIndex := 0
+	// 因此下一次日志同步的序号一定需要 nextIndex 来计算
+	// nextIndex 可能是日志冲突后重新计算而来
+	nextIndex := rf.nextIndex[peerId] // 下一个同步的日志序号
+	// PrevLogIndex: 紧跟在新日志之前的日志项的 index，是 leader认为 follower 当前可能已经同步到了的最高日志项的 index
+	// 对于第i个server，就是nextIndex[i] - 1。
+	// leader 中上一次同步的日志索引
+	prevLogIndex := nextIndex - 1
 	entries := make([]LogEntry, 0)
-	// 可能会存在 nextIndex 超过 rf.log 的情况
-	if nextIndex <= rf.log.size() {
-		prevLogIndex = nextIndex - 1
+	// 正常情况下，prevLogIndex = matchIndex
+	// 存在 nextIndex 超过 rf.log 的情况
+	if nextIndex > rf.log.size() {
+		logger.Panicf("peer: %d nextIndex: %d bigger than size of log: %d",
+			rf.me, nextIndex, rf.log.size())
 	}
 	// double check，检查 prevLogIndex 与 lastIncludeIndex
-	if rf.log.LastIncludedIndex != 0 && prevLogIndex < rf.log.LastIncludedIndex {
+	// 已经快照过的日志，无需再次同步
+	if /*rf.log.LastIncludedIndex != 0 &&*/ prevLogIndex < rf.log.LastIncludedIndex {
 		DPrintf("peer: %d sendAppendEntriesToPeer but reject, prevLogIndex: %d, lastIncludedIndex: %d",
 			rf.me, prevLogIndex, rf.log.LastIncludedIndex)
 		rf.mu.Unlock()
 		return
 	}
-	prevLogTerm = rf.log.entryAt(prevLogIndex).Term
+	prevLogTerm := rf.log.entryAt(prevLogIndex).Term
+	// 待同步日志
 	entries = rf.log.getEntries(nextIndex - rf.log.first())
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -537,7 +552,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
 		Entries:      entries,
-		LeaderCommit: rf.commitIndex,
+		LeaderCommit: rf.commitIndex, // leader节点提交序号，通知 follower
 	}
 	reply := AppendEntriesReply{}
 	DPrintf("leader: %d sendAppendEntries to peer: %d, args: %+v", rf.me, peerId, args)
@@ -571,6 +586,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 			rf.commitIndex = newCommitIndex
 		}
 	} else {
+		// 发生日志冲突的情况下，matchIndex 与 nextIndex 就不满足 nextIndex = matchIndex + 1 的公式了
 		if reply.ConflictTerm == -1 {
 			rf.nextIndex[peerId] = reply.ConflictIndex
 		} else {
@@ -596,8 +612,10 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 }
 
 type AppendEntriesArgs struct {
-	Term         int        // leader 任期
-	LeaderId     int        // leader id
+	Term     int // leader 任期
+	LeaderId int // leader id
+	// prevLogIndex：添加下面log的前一个log的Index，非常关键的一个指标；
+	// 理论上正常情况下，follower的lastIndex应该等于prevLogIndex。
 	PrevLogIndex int        // leader 中上一次同步的日志索引
 	PrevLogTerm  int        // leader 中上一次同步的日志任期
 	Entries      []LogEntry // 同步日志
@@ -631,12 +649,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 	}
 	rf.leaderId = args.LeaderId
-	rf.lastReceivedFromLeader = time.Now()
+	rf.lastReceivedFromLeader = time.Now() // 更新日志、心跳时间
+	// 如果上一个同步日志序号小于快照序号
 	if args.PrevLogIndex < rf.log.LastIncludedIndex {
-		reply.ConflictIndex = rf.log.LastIncludedIndex
+		reply.ConflictIndex = rf.log.LastIncludedIndex // 如果小于最小快照序号，则无需同步，直接告知其最小序号
 		reply.ConflictTerm = -1
 		return
 	}
+	// If a follower does not have prevLogIndex in its log,
+	// it should return with conflictIndex = len(log) and conflictTerm = None.
 	logSize := rf.log.size()
 	// 日志、任期冲突直接返回
 	if args.PrevLogIndex >= logSize {
@@ -644,8 +665,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		return
 	}
+	// If a follower does have prevLogIndex in its log, but the term does not match,
+	// it should return conflictTerm = log[prevLogIndex].Term,
+	// and then search its log for the first index whose entry has term equal to conflictTerm.
 	if rf.log.entryAt(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.ConflictTerm = rf.log.entryAt(args.PrevLogIndex).Term
+		// search first index whose entry' term == conflictTerm
 		for i := rf.log.first(); i < rf.log.size(); i++ {
 			if rf.log.entryAt(i).Term == reply.ConflictTerm {
 				reply.ConflictIndex = i
@@ -655,7 +680,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	entriesSize := len(args.Entries)
-	insertIndex := args.PrevLogIndex + 1
+	insertIndex := args.PrevLogIndex + 1 // 待插入日志序号
 	entriesIndex := 0
 	// 遍历日志，找到冲突日志
 	for {

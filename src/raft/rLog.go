@@ -35,7 +35,7 @@ func defaultRLog() rLog {
 
 // entryAt 回去 index 对应的日志
 func (l *rLog) entryAt(index int) LogEntry {
-	if index < l.LastIncludedIndex || index > l.LastIncludedIndex+len(l.Entries) {
+	if index < l.LastIncludedIndex || index >= l.LastIncludedIndex+len(l.Entries) {
 		panic(fmt.Sprintf("lastIncludeIndex: %d, but index: %d is invalid", l.LastIncludedIndex, index))
 	}
 	return l.Entries[index-l.LastIncludedIndex]

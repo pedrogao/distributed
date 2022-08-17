@@ -61,6 +61,8 @@ PASS
 ok      pedrogao/distributed/raft       353.477s
 ```
 
-- leader backs up quickly over incorrect follower logs ...
+FIXME:
+
+- TestBackup2B: leader backs up quickly over incorrect follower logs ... 日志同步问题
 - snapshots basic ...
 - install snapshots (crash) ...
