@@ -2,10 +2,11 @@
 
 echo "Start..."
 
-for i in {1..20}  
+for i in {1..2}  
 do  
     echo "loop$i"
-    go test -race -run TestBackup2B
+    go test -race -run 2D
+    go test -race -run 2C
 done  
 
 echo "All Is Done..."

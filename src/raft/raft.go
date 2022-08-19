@@ -527,13 +527,15 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	// PrevLogIndex: 紧跟在新日志之前的日志项的 index，是 leader认为 follower 当前可能已经同步到了的最高日志项的 index
 	// 对于第i个server，就是nextIndex[i] - 1。
 	// leader 中上一次同步的日志索引
-	prevLogIndex := nextIndex - 1
+	prevLogTerm := 0
+	prevLogIndex := 0
 	entries := make([]LogEntry, 0)
 	// 正常情况下，prevLogIndex = matchIndex
-	// 存在 nextIndex 超过 rf.log 的情况
-	if nextIndex > rf.log.size() {
-		logger.Panicf("peer: %d nextIndex: %d bigger than size of log: %d",
+	// 可能会存在 nextIndex 超过 rf.log 的情况
+	if nextIndex <= rf.log.size() {
+		DPrintf("peer: %d nextIndex: %d bigger than size of log: %d",
 			rf.me, nextIndex, rf.log.size())
+		prevLogIndex = nextIndex - 1
 	}
 	// double check，检查 prevLogIndex 与 lastIncludeIndex
 	// 已经快照过的日志，无需再次同步
@@ -543,7 +545,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		rf.mu.Unlock()
 		return
 	}
-	prevLogTerm := rf.log.entryAt(prevLogIndex).Term
+	prevLogTerm = rf.log.entryAt(prevLogIndex).Term
 	// 待同步日志
 	entries = rf.log.getEntries(nextIndex - rf.log.first())
 	args := AppendEntriesArgs{

@@ -17,7 +17,7 @@ import (
 
 var (
 	// Debug Debugging
-	Debug  = true
+	Debug  = false
 	logger = log.New(log.WithSkipLevel(3))
 )
 
