@@ -1,7 +1,11 @@
 package shardctrler
 
+import (
+	"time"
+)
+
 //
-// Shard controler: assigns shards to replication groups.
+// Shard controller: assigns shards to replication groups.
 //
 // RPC interface:
 // Join(servers) -- add a set of groups (gid -> server-list mapping).
@@ -20,6 +24,9 @@ package shardctrler
 // NShards The number of shards.
 const NShards = 10
 
+// 默认超时时间
+var defaultTimeout = time.Millisecond * 1000
+
 // Config A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
@@ -29,13 +36,19 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK             = "OK"
+	ErrWrongLeader = "ErrWrongLeader"
+	ErrNoLeader    = "ErrNoLeader" // leader还没被选出来
+	ErrTimeout     = "ErrTimeout"
+	ErrShutdown    = "ErrShutdown"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings
+	Seq      int
+	ClientId int64
 }
 
 type JoinReply struct {
@@ -44,7 +57,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int
+	Seq      int
+	ClientId int64
 }
 
 type LeaveReply struct {
@@ -53,8 +68,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int
+	GID      int
+	Seq      int
+	ClientId int64
 }
 
 type MoveReply struct {
@@ -63,7 +80,9 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num      int // desired config number
+	Seq      int
+	ClientId int64
 }
 
 type QueryReply struct {

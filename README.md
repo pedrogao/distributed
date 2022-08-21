@@ -29,3 +29,4 @@
 - [可靠分布式系统-paxos 的直观解释](https://blog.openacid.com/algo/paxos/#paxos%E7%AE%97%E6%B3%95%E6%8F%8F%E8%BF%B0)
 - [后分布式时代: 多数派读写的'少数派'实现](https://drmingdrmer.github.io/algo/2020/10/18/quorum.html)
 - [将 paxos 和 raft 统一到一个协议下: abstract-paxos](https://blog.openacid.com/algo/abstract-paxos/#quorum)
+- [MIT6.824](https://www.jianshu.com/nb/36503949)

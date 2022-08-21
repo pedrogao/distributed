@@ -43,7 +43,7 @@ func call(srv string, rpcname string,
 	return false
 }
 
-//
+// Get
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -53,7 +53,7 @@ func (ck *Clerk) Get(key string) string {
 	return ""
 }
 
-//
+// PutAppend
 // shared by Put and Append.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {

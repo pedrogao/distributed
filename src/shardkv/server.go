@@ -2,6 +2,9 @@ package shardkv
 
 import (
 	"sync"
+	"sync/atomic"
+
+	"github.com/pedrogao/log"
 
 	"pedrogao/distributed/labgob"
 	"pedrogao/distributed/labrpc"
@@ -19,12 +22,13 @@ type ShardKV struct {
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
-	make_end     func(string) *labrpc.ClientEnd
-	gid          int
-	ctrlers      []*labrpc.ClientEnd
-	maxraftstate int // snapshot if log grows this big
+	makeEnd      func(string) *labrpc.ClientEnd
+	gid          int                 // group id
+	ctrlers      []*labrpc.ClientEnd // config controllers
+	maxraftstate int                 // snapshot if log grows this big
 
 	// Your definitions here.
+	dead int32
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -44,12 +48,32 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+	atomic.StoreInt32(&kv.dead, 1)
+}
+
+func (kv *ShardKV) killed() bool {
+	z := atomic.LoadInt32(&kv.dead)
+	return z == 1
+}
+
+func (kv *ShardKV) Me() int {
+	val := int32(kv.me)
+	return int(atomic.LoadInt32(&val))
+}
+
+func (kv *ShardKV) apply() {
+	for !kv.killed() {
+		select {
+		case message := <-kv.applyCh:
+			log.Fatalf("invalid message: %+v", message)
+		}
+	}
 }
 
 // StartServer
 // servers[] contains the ports of the servers in this group.
 //
-// me is the index of the current server in servers[].
+// param me is the index of the current server in servers[].
 //
 // the k/v server should store snapshots through the underlying Raft
 // implementation, which should call persister.SaveStateAndSnapshot() to
@@ -74,7 +98,8 @@ func (kv *ShardKV) Kill() {
 // StartServer() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
+func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int,
+	gid int, ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
@@ -82,7 +107,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv := new(ShardKV)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-	kv.make_end = make_end
+	kv.makeEnd = makeEnd
 	kv.gid = gid
 	kv.ctrlers = ctrlers
 

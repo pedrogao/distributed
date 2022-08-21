@@ -1,5 +1,9 @@
 package shardkv
 
+import (
+	"time"
+)
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -8,6 +12,9 @@ package shardkv
 //
 // You will have to modify these definitions.
 //
+
+// 默认超时时间
+var defaultTimeout = time.Millisecond * 1000
 
 const (
 	OK             = "OK"

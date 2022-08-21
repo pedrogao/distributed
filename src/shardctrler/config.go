@@ -14,8 +14,6 @@ import (
 	"pedrogao/distributed/raft"
 )
 
-// import "log"
-
 func randstring(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)

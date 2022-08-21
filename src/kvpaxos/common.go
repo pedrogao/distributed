@@ -7,7 +7,7 @@ const (
 
 type Err string
 
-// Put or Append
+// PutAppendArgs Put or Append
 type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	Key   string

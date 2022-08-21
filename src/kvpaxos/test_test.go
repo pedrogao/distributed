@@ -376,7 +376,7 @@ func TestUnreliable(t *testing.T) {
 	}
 	for i := 0; i < nservers; i++ {
 		kva[i] = StartServer(kvh, i)
-		kva[i].setunreliable(true)
+		kva[i].setUnreliable(true)
 	}
 
 	ck := MakeClerk(kvh)
@@ -630,7 +630,7 @@ func TestManyPartition(t *testing.T) {
 			}
 		}
 		kva[i] = StartServer(kvh, i)
-		kva[i].setunreliable(true)
+		kva[i].setUnreliable(true)
 	}
 	defer part(t, tag, nservers, []int{}, []int{}, []int{})
 	part(t, tag, nservers, []int{0, 1, 2, 3, 4}, []int{}, []int{})

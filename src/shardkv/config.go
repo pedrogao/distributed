@@ -18,8 +18,6 @@ import (
 	"pedrogao/distributed/shardctrler"
 )
 
-// import "log"
-
 func randstring(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)
@@ -73,7 +71,7 @@ type config struct {
 }
 
 func (cfg *config) checkTimeout() {
-	// enforce a two minute real-time limit on each test
+	// enforce a two-minute real-time limit on each test
 	if !cfg.t.Failed() && time.Since(cfg.start) > 120*time.Second {
 		cfg.t.Fatal("test took longer than 120 seconds")
 	}
@@ -107,7 +105,7 @@ func (cfg *config) checklogs() {
 	}
 }
 
-// controler server name for labrpc.
+// controller server name for labrpc.
 func (cfg *config) ctrlername(i int) string {
 	return "ctrler" + strconv.Itoa(i)
 }
@@ -122,7 +120,7 @@ func (cfg *config) makeClient() *Clerk {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
-	// ClientEnds to talk to controler service.
+	// ClientEnds to talk to controller service.
 	ends := make([]*labrpc.ClientEnd, cfg.nctrlers)
 	endnames := make([]string, cfg.n)
 	for j := 0; j < cfg.nctrlers; j++ {
@@ -155,7 +153,7 @@ func (cfg *config) deleteClient(ck *Clerk) {
 	delete(cfg.clerks, ck)
 }
 
-// Shutdown i'th server of gi'th group, by isolating it
+// ShutdownServer Shutdown i'th server of gi'th group, by isolating it
 func (cfg *config) ShutdownServer(gi int, i int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -352,7 +350,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	cfg.net = labrpc.MakeNetwork()
 	cfg.start = time.Now()
 
-	// controler
+	// controller
 	cfg.nctrlers = 3
 	cfg.ctrlerservers = make([]*shardctrler.ShardCtrler, cfg.nctrlers)
 	for i := 0; i < cfg.nctrlers; i++ {

@@ -35,7 +35,7 @@ func DPrintf(format string, a ...any) /*(n int, err error)*/ {
 	return
 }
 
-// paxos 提案格式
+// Op paxos 提案格式
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -72,17 +72,17 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 func (kv *KVPaxos) kill() {
 	DPrintf("Kill(%d): die\n", kv.me)
 	atomic.StoreInt32(&kv.dead, 1)
-	kv.l.Close()
+	_ = kv.l.Close()
 	kv.px.Kill()
 }
 
 // call this to find out if the server is dead.
-func (kv *KVPaxos) isdead() bool {
+func (kv *KVPaxos) isDead() bool {
 	return atomic.LoadInt32(&kv.dead) != 0
 }
 
 // please do not change these two functions.
-func (kv *KVPaxos) setunreliable(what bool) {
+func (kv *KVPaxos) setUnreliable(what bool) {
 	if what {
 		atomic.StoreInt32(&kv.unreliable, 1)
 	} else {
@@ -90,11 +90,11 @@ func (kv *KVPaxos) setunreliable(what bool) {
 	}
 }
 
-func (kv *KVPaxos) isunreliable() bool {
+func (kv *KVPaxos) isUnreliable() bool {
 	return atomic.LoadInt32(&kv.unreliable) != 0
 }
 
-//
+// StartServer
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
 // form the fault-tolerant key/value service.
@@ -126,13 +126,13 @@ func StartServer(servers []string, me int) *KVPaxos {
 	// or do anything to subvert it.
 
 	go func() {
-		for kv.isdead() == false {
+		for kv.isDead() == false {
 			conn, err := kv.l.Accept()
-			if err == nil && kv.isdead() == false {
-				if kv.isunreliable() && (rand.Int63()%1000) < 100 {
+			if err == nil && kv.isDead() == false {
+				if kv.isUnreliable() && (rand.Int63()%1000) < 100 {
 					// discard the request.
-					conn.Close()
-				} else if kv.isunreliable() && (rand.Int63()%1000) < 200 {
+					_ = conn.Close()
+				} else if kv.isUnreliable() && (rand.Int63()%1000) < 200 {
 					// process the request but force discard of reply.
 					c1 := conn.(*net.UnixConn)
 					f, _ := c1.File()
@@ -145,9 +145,9 @@ func StartServer(servers []string, me int) *KVPaxos {
 					go rpcs.ServeConn(conn)
 				}
 			} else if err == nil {
-				conn.Close()
+				_ = conn.Close()
 			}
-			if err != nil && kv.isdead() == false {
+			if err != nil && kv.isDead() == false {
 				fmt.Printf("KVPaxos(%v) accept: %v\n", me, err.Error())
 				kv.kill()
 			}
