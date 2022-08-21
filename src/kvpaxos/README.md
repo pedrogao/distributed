@@ -71,6 +71,13 @@ to := 10 * time.Millisecond
 提示：当测试失败时，检查日志中的 gob 错误（例如“rpc: writing response: gob: type not registered for interface ...”），  
 因为 go 不认为错误是致命的，尽管它对于实验室。
 
+## 结果
+
+```sh
+go test -race .      
+ok      pedrogao/distributed/kvpaxos    79.032s
+```
+
 ## 参考资料
 
 -[lab3](http://nil.csail.mit.edu/6.824/2015/labs/lab-3.html)

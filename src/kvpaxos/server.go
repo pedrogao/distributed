@@ -19,11 +19,12 @@ import (
 
 var (
 	// Debug Debugging
-	Debug  = true
+	Debug  = false
 	logger = log.New(log.WithSkipLevel(3))
 )
 
 func init() {
+	log.SetOptions(log.WithLevel(log.ErrorLevel))
 	if os.Getenv("debug") != "" || Debug {
 		logger.SetOptions(log.WithLevel(log.DebugLevel))
 	} else {
@@ -95,28 +96,30 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	}
 	// 下一个应用序号
 	seq := kv.lastApplied + 1
-	// 提交
-	kv.px.Start(seq, op)
-	// 等待，暂时不考虑超时，一直循环
-	val := kv.wait(seq)
-	if val == nil {
-		reply.Err = ErrTimeout
-		DPrintf("%d Get no val, args: %+v, reply: %+v ", kv.Me(), args, reply)
-		return nil
-	}
-	if val != op { // 提交的 op 被 decided 后 break
-		DPrintf("%d Get wrong val, args: %+v, reply: %+v ", kv.Me(), args, reply)
-		reply.Err = ErrWrongLeader
-		return nil
+	for {
+		// 提交
+		kv.px.Start(seq, op)
+		// 等待，暂时不考虑超时，一直循环
+		val := kv.wait(seq)
+		if val == op { // 提交的 op 被 decided 后 break
+			break
+		}
+		seq++
 	}
 
 	// apply
-	kv.lastApplied++
-	ret, exists := kv.apply(val.(Op))
+	for ; kv.lastApplied+1 < seq; kv.lastApplied++ {
+		val := kv.wait(kv.lastApplied + 1)
+		kv.apply(val.(Op))
+	}
+
+	ret, exists := kv.store[op.Key]
 	if !exists {
 		reply.Err = ErrNoKey
+		DPrintf("%d Get Op err, op: %+v ", kv.Me(), op)
 		return nil
 	}
+
 	reply.Value = ret
 	reply.Err = OK
 	DPrintf("%d Get Op ok, op: %+v ", kv.Me(), op)
@@ -156,26 +159,19 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// 下一个应用序号
 	seq := kv.lastApplied + 1
 	// 提交
-	kv.px.Start(seq, op)
-	// 等待，暂时不考虑超时，一直循环
-	val := kv.wait(seq)
-	if val == nil {
-		reply.Err = ErrTimeout
-		DPrintf("%d Get no val, args: %+v, reply: %+v ", kv.Me(), args, reply)
-		return nil
+	for {
+		DPrintf("%d PutAppend seq, op: %+v, seq: %+v ", kv.Me(), op, seq)
+		kv.px.Start(seq, op)
+		// 等待，暂时不考虑超时，一直循环
+		val := kv.wait(seq)
+		if val == op { // 提交的 op 被 decided 后 break
+			break
+		}
+		seq++
 	}
-	if val != op { // 提交的 op 被 decided 后 break
-		reply.Err = ErrWrongLeader
-		DPrintf("%d Get wrong val, args: %+v, reply: %+v ", kv.Me(), args, reply)
-		return nil
-	}
-
-	// apply
-	kv.lastApplied++
-	kv.apply(val.(Op))
+	// put、append可以无需apply，在 get的时候再 apply
 	reply.Err = OK
 	DPrintf("%d PutAppend Op ok, op: %+v ", kv.Me(), op)
-	kv.px.Done(kv.lastApplied)
 
 	return nil
 }
