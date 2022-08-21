@@ -90,7 +90,7 @@ func call(srv string, name string, args any, reply any) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			log.Debugf("paxos Dial() failed: %v\n", err1)
+			log.Debugf("paxos Dial() failed: %v", err1)
 		}
 		return false
 	}
@@ -244,7 +244,7 @@ func (px *Paxos) sendPrepare(seq int, v any) (bool, string, any) {
 		ProposeNum: pNum,
 	}
 
-	log.Debugf("PrepareArgs{ Seq: %v, ProposeNum: %v }\n", seq, pNum)
+	log.Debugf("PrepareArgs{ Seq: %v, ProposeNum: %v }", seq, pNum)
 
 	replyPNum := ""
 	num := 0
@@ -276,7 +276,7 @@ func (px *Paxos) sendAccept(seq int, pNum string, v any) bool {
 		AcceptPValue: v,
 	}
 
-	log.Debugf("AcceptArgs{ Seq: %v, AcceptPNum: %v, AcceptPValue: %v }\n", seq, pNum, v)
+	log.Debugf("AcceptArgs{ Seq: %v, AcceptPNum: %v, AcceptPValue: %v }", seq, pNum, v)
 
 	num := 0
 	for i, peer := range px.peers {
@@ -306,7 +306,7 @@ func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 	tmp.acceptValue = v
 	px.instances[seq] = tmp
 
-	log.Debugf("instance{ state: %v, proposeNum: %v, acceptNum: %v, acceptValue: %v }\n",
+	log.Debugf("instance{ state: %v, proposeNum: %v, acceptNum: %v, acceptValue: %v }",
 		tmp.state, tmp.proposeNum, tmp.acceptNum, tmp.acceptValue)
 
 	args := DecideArgs{
@@ -336,7 +336,7 @@ func (px *Paxos) sendDecide(seq int, pNum string, v any) {
 //
 func (px *Paxos) Start(seq int, v any) {
 	// Your code here.
-	log.Debugf("Paxos server Start, seq = %v, value = %v\n", seq, v)
+	log.Debugf("Paxos server Start, seq = %v, value = %v", seq, v)
 	go func() {
 		if seq < px.Min() {
 			return
@@ -436,7 +436,7 @@ func (px *Paxos) Min() int {
 	defer px.mu.Unlock()
 
 	min := px.dones[px.me]
-	log.Infof("min = %v\n", min)
+	log.Infof("min = %v", min)
 	for i := range px.dones {
 		if px.dones[i] < min {
 			min = px.dones[i]
@@ -521,7 +521,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
-	log.Debugf("[Make] me = %d, len(px.peers) = %v\n", me, len(px.peers))
+	log.Debugf("[Make] me = %d, len(px.peers) = %v", me, len(px.peers))
 	px.dones = make([]int, len(px.peers))
 	for i := range px.dones {
 		px.dones[i] = -1
@@ -561,7 +561,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 						f, _ := c1.File()
 						err := syscall.Shutdown(int(f.Fd()), syscall.SHUT_WR)
 						if err != nil {
-							log.Debugf("shutdown: %v\n", err)
+							log.Debugf("shutdown: %v", err)
 						}
 						atomic.AddInt32(&px.rpcCount, 1)
 						go rpcs.ServeConn(conn)
@@ -573,7 +573,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 					conn.Close()
 				}
 				if err != nil && px.isDead() == false {
-					log.Debugf("Paxos(%v) accept: %v\n", me, err.Error())
+					log.Debugf("Paxos(%v) accept: %v", me, err.Error())
 				}
 			}
 		}()

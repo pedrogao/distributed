@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 func check(t *testing.T, ck *Clerk, key string, value string) {
 	v := ck.Get(key)
 	if v != value {
+		debug.PrintStack()
 		t.Fatalf("Get(%v) -> %v, expected %v", key, v, value)
 	}
 }
