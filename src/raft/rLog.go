@@ -2,12 +2,13 @@ package raft
 
 import "fmt"
 
+// LogEntry log item of FSM
 type LogEntry struct {
 	Term    int // 任期
 	Command any // 命令
 }
 
-func (le LogEntry) String() string {
+func (le *LogEntry) String() string {
 	return fmt.Sprintf("term: %d, command: %v", le.Term, le.Command)
 }
 
@@ -16,27 +17,32 @@ func (le LogEntry) String() string {
 // 故将其封装为一个结构体，对外屏蔽细节
 type rLog struct {
 	Entries           []LogEntry
-	LastIncludedIndex int
-	LastIncludedTerm  int
+	LastIncludedIndex int // 快照中的最后一个日志序号
+	LastIncludedTerm  int // 快照中的最后一个日志任期
 }
 
 func defaultRLog() rLog {
 	return rLog{
-		Entries: []LogEntry{
-			{
-				Term:    0,
-				Command: nil,
-			},
-		},
+		// 第0位当作哨兵处理，即 lastIncluded
+		Entries: []LogEntry{{
+			Term:    0,
+			Command: nil,
+		}},
 		LastIncludedIndex: 0,
 		LastIncludedTerm:  0,
 	}
 }
 
+//
+// 所有的 index 参数都是绝对序号
+//
+
 // entryAt 回去 index 对应的日志
 func (l *rLog) entryAt(index int) LogEntry {
+	// 9 3
 	if index < l.LastIncludedIndex || index >= l.LastIncludedIndex+len(l.Entries) {
-		panic(fmt.Sprintf("lastIncludeIndex: %d, but index: %d is invalid", l.LastIncludedIndex, index))
+		panic(fmt.Sprintf("valid range: [%d, %d), but index is: %d ",
+			l.LastIncludedIndex, l.LastIncludedIndex+len(l.Entries), index))
 	}
 	return l.Entries[index-l.LastIncludedIndex]
 }
@@ -46,40 +52,53 @@ func (l *rLog) append(entry ...LogEntry) {
 	l.Entries = append(l.Entries, entry...)
 }
 
-// subEntries entries = entries[from, to)
+// subEntries Entries = Entries[from, to)
 func (l *rLog) subEntries(from, to int) {
-	tmp := make([]LogEntry, l.size())
-	copy(tmp, l.Entries)
+	if from < l.LastIncludedIndex || from > l.LastIncludedIndex+len(l.Entries) {
+		panic(fmt.Sprintf("valid range: [%d, %d), but from is: %d ",
+			l.LastIncludedIndex, l.LastIncludedIndex+len(l.Entries), from))
+	}
+	if to < l.LastIncludedIndex || to > l.LastIncludedIndex+len(l.Entries) {
+		panic(fmt.Sprintf("valid range: [%d, %d), but to is: %d ",
+			l.LastIncludedIndex, l.LastIncludedIndex+len(l.Entries), to))
+	}
+	from -= l.LastIncludedIndex
+	to -= l.LastIncludedIndex
+	// tmp := make([]LogEntry, l.size())
+	// copy(tmp, l.Entries)
 	// copy on write, 避免 log data race
-	l.Entries = tmp[from:to]
+	l.Entries = l.Entries[from:to]
 }
 
-// subTo entries = entries[0, to)
+// subTo Entries = Entries[LastIncludedIndex, to)
 func (l *rLog) subTo(to int) {
-	l.subEntries(0, to)
+	l.subEntries(l.LastIncludedIndex, to)
 }
 
-// subFrom entries = entries[from, size)
+// subFrom Entries = Entries[from, size)
 func (l *rLog) subFrom(from int) {
 	l.subEntries(from, l.size())
 }
 
 // getEntries
 func (l *rLog) getEntries(from int) []LogEntry {
+	if from < l.LastIncludedIndex || from > l.LastIncludedIndex+len(l.Entries) {
+		panic(fmt.Sprintf("valid range: [%d, %d), but from is: %d ",
+			l.LastIncludedIndex, l.LastIncludedIndex+len(l.Entries), from))
+	}
+
+	from -= l.LastIncludedIndex
 	return l.Entries[from:]
 }
 
 // 最后序号
 func (l *rLog) last() int {
-	if len(l.Entries) == 0 && l.LastIncludedIndex == 0 {
-		return 0
-	}
 	return len(l.Entries) + l.LastIncludedIndex - 1
 }
 
 // 最后任期
 func (l *rLog) lastTerm() int {
-	return l.Entries[l.last()-l.LastIncludedIndex].Term
+	return l.Entries[len(l.Entries)-1].Term
 }
 
 // 第一个序号
@@ -89,7 +108,7 @@ func (l *rLog) first() int {
 
 // 第一个任期
 func (l *rLog) firstTerm() int {
-	return l.Entries[0].Term
+	return l.entryAt(l.first()).Term
 }
 
 // 日志长度

@@ -21,6 +21,8 @@ func MakePersister() *Persister {
 	return &Persister{}
 }
 
+// clone copy on write bytes
+// deep copy
 func clone(orig []byte) []byte {
 	x := make([]byte, len(orig))
 	copy(x, orig)

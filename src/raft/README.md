@@ -2,6 +2,12 @@
 
 详细参考[raft 实现](../../notes/%E8%B0%88%E8%B0%88%20Raft%20%E5%88%86%E5%B8%83%E5%BC%8F%E5%85%B1%E8%AF%86%E6%80%A7%E7%AE%97%E6%B3%95%E7%9A%84%E5%AE%9E%E7%8E%B0.md)。
 
+
+## tips
+
+- 如果服务器存在一个日志和新的需要复制的日志冲突了(相同的索引但是属于不同的任期)，那么删除掉这个日志条目以及所有处于它后面的日志。
+-
+
 测试结果：
 
 ```sh
@@ -66,3 +72,12 @@ FIXME:
 - TestBackup2B: leader backs up quickly over incorrect follower logs ... 日志同步问题
 - snapshots basic ...
 - install snapshots (crash) ...
+
+
+## 参考资料
+
+- [MIT 6.824 2020 Raft 实现细节汇总](https://zhuanlan.zhihu.com/p/103849249)
+- [Raft算法详解](https://zhuanlan.zhihu.com/p/32052223)
+- [MIT6.824-Lab2实现一个Raft库](https://zhuanlan.zhihu.com/p/524341057)
+- [Students' Guide to Raft](https://thesquareplanet.com/blog/students-guide-to-raft/)
+- [Instructors' Guide to Raft](https://thesquareplanet.com/blog/instructors-guide-to-raft/)

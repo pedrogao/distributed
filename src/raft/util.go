@@ -61,3 +61,10 @@ func minInt(i int, j int) int {
 	}
 	return j
 }
+
+func maxInt(i int, j int) int {
+	if i > j {
+		return i
+	}
+	return j
+}

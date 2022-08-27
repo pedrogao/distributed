@@ -76,9 +76,21 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	err := e.Encode(rf.currentTerm)
+	if err != nil {
+		DPrintf("encode currentTerm err")
+		return
+	}
+	err = e.Encode(rf.votedFor)
+	if err != nil {
+		DPrintf("encode votedFor err")
+		return
+	}
+	err = e.Encode(rf.log)
+	if err != nil {
+		DPrintf("encode log err")
+		return
+	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -109,9 +121,21 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) persistStateAndSnapshot(snapshot []byte) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	err := e.Encode(rf.currentTerm)
+	if err != nil {
+		DPrintf("encode currentTerm err")
+		return
+	}
+	err = e.Encode(rf.votedFor)
+	if err != nil {
+		DPrintf("encode votedFor err")
+		return
+	}
+	err = e.Encode(rf.log)
+	if err != nil {
+		DPrintf("encode log err")
+		return
+	}
 	data := w.Bytes()
 	rf.persister.SaveStateAndSnapshot(data, snapshot)
 }
@@ -124,6 +148,7 @@ type InstallSnapshotArgs struct {
 	LastIncludedTerm  int
 	Data              []byte
 }
+
 type InstallSnapshotReply struct {
 	Term int
 }
@@ -132,32 +157,43 @@ type InstallSnapshotReply struct {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
+		DPrintf("%d peer reject leader: %d snapshot request, current term: %d",
+			rf.me, args.LeaderId, rf.currentTerm)
 		return
 	}
 	// Send the entire snapshot in a single InstallSnapshot RPC.
 	// Don't implement Figure 13's offset mechanism for splitting up the snapshot.
+	// leader任期大，那么成为 follower
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
+	// 与 leader 任期相同，但自己不是 follower，那么称为 follower
 	if rf.state != Follower {
 		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
+	// 更新 leader元数据
 	rf.leaderId = args.LeaderId
 	rf.lastReceivedFromLeader = time.Now()
 	// 拒绝，如果你的小，证明我已经快照过了，无需再次快照
-	if args.LastIncludedIndex <= rf.log.LastIncludedIndex {
+	if rf.log.LastIncludedIndex >= args.LastIncludedIndex {
+		DPrintf("%d peer reject2 leader: %d snapshot request, last include index: %d",
+			rf.me, args.LeaderId, rf.log.LastIncludedIndex)
 		return
 	}
+	// 快照消息
 	msg := ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      args.Data,
 		SnapshotTerm:  args.LastIncludedTerm,
 		SnapshotIndex: args.LastIncludedIndex,
 	}
+	DPrintf("peer: %d, send snapshot msg commit index: %d, last applied: %d, SnapshotTerm: %d, SnapshotIndex: %d ",
+		rf.me, rf.commitIndex, rf.lastApplied, msg.SnapshotTerm, msg.SnapshotIndex)
 	go func() {
 		// 应用快照 msg
 		rf.applyCh <- msg
@@ -181,28 +217,41 @@ func (rf *Raft) sendInstallSnapshotToPeer(peerId int) {
 		Data:              rf.snapshot,
 	}
 	reply := InstallSnapshotReply{}
+	DPrintf("%d leader send snapshot to peer: %d start", args.LeaderId, peerId)
 	rf.mu.Unlock()
+
 	ok := rf.sendInstallSnapshot(peerId, &args, &reply)
 	if !ok {
 		return
 	}
+
+	DPrintf("%d leader send snapshot to peer: %d successful, reply: %v", args.LeaderId, peerId, reply)
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// 如果当前的状态不为 leader，那么将不能接受
 	if rf.state != Leader || args.Term != rf.currentTerm {
+		DPrintf("%d leader reject from: %d snapshot reply, reply: %v", rf.me, peerId, reply)
 		return
 	}
+
 	if reply.Term > rf.currentTerm {
 		rf.becomeFollower(reply.Term)
 		// 你的任期大，我成为你的追随者
 		rf.leaderId = peerId
 		rf.persist()
+		DPrintf("%d leader become follower from: %d snapshot reply, reply: %v", rf.me, peerId, reply)
 		return
 	}
 	// 注意，快照和日志同步一样，需要更新 matchIndex 和 nextIndex
 	// 发送完快照后，更新了 matchIndex 和 nextIndex，因此在快照期间的日志同步将需要重新来
+	// FIXME? 如果已同步的序号小，才接收快照
+	// if rf.matchIndex[peerId] < args.LastIncludedIndex {
 	rf.matchIndex[peerId] = args.LastIncludedIndex
 	rf.nextIndex[peerId] = args.LastIncludedIndex + 1
+	// }
+	DPrintf("%d leader send snapshot to peer: %d successful, update match index: %d, next index: %d",
+		args.LeaderId, peerId, rf.matchIndex[peerId], rf.nextIndex[peerId])
 }
 
 // CondInstallSnapshot
@@ -213,8 +262,11 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// 节点安装快照
 	// 已快照过了，拒绝
-	if lastIncludedIndex <= rf.commitIndex {
+	if rf.commitIndex >= lastIncludedIndex {
+		DPrintf("%d peer reject snapshot, current index: %d, last included index: %d",
+			rf.me, rf.commitIndex, lastIncludedIndex)
 		return false
 	}
 	// 快照后的处理工作
@@ -225,30 +277,42 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		rf.commitIndex = lastIncludedIndex
 		rf.lastApplied = lastIncludedIndex
 		rf.persistStateAndSnapshot(snapshot) // 持久化快照
+		DPrintf("%d peer cond snapshot successful, commit index: %d, last applied: %d, "+
+			"lastIncludedTerm: %d, lastIncludedIndex: %d, log size: %d, log: %+v",
+			rf.me, rf.commitIndex, rf.lastApplied, lastIncludedTerm, lastIncludedIndex, rf.log.size(), rf.log.Entries)
 	}()
-	// 删除掉 lastIncludedIndex 之前的日志记录
-	if lastIncludedIndex <= rf.log.last() && rf.log.entryAt(lastIncludedIndex).Term == lastIncludedTerm {
-		// [rf.log.LastIncludedIndex, lastIncludedIndex) 是当前 snapshot 中的日志数据，所以应该删除
+	// 如果log中含有 snapshot 意外的日志
+	// 删除掉 LastIncludedIndex 之前的日志记录
+	if rf.log.last() > lastIncludedIndex && rf.log.entryAt(lastIncludedIndex).Term == lastIncludedTerm {
+		// [rf.log.LastIncludedIndex, LastIncludedIndex) 是当前 snapshot 中的日志数据，所以应该删除
 		// 前面需要一个占位
-		rf.log.Entries = append([]LogEntry{{Term: 0, Command: nil}}, rf.log.Entries[lastIncludedIndex-rf.log.LastIncludedIndex+1:]...)
+		// 删掉 LastIncludedIndex+1之前的日志，已经在快照中了
+		rf.log.subFrom(rf.log.LastIncludedIndex + 1)
+		rf.log.Entries = append([]LogEntry{{Term: lastIncludedTerm}}, rf.log.Entries...)
 		return true
 	}
-	// 快照，删除所有 log entries
-	rf.log.Entries = []LogEntry{{Term: 0, Command: nil}}
+	// 快照，删除所有 log Entries
+	rf.log.Entries = []LogEntry{{Term: lastIncludedTerm}}
 	return true
 }
 
+// Snapshot 判断日志大小，主动快照
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	DPrintf("%d peer %s handle snapshot, index: %d ", rf.me, rf.state, index)
 	// 拒绝快照过的，也拒绝还未提交的
-	if index <= rf.log.LastIncludedIndex || index > rf.commitIndex {
+	if rf.log.LastIncludedIndex >= index || index > rf.commitIndex {
+		DPrintf("%d peer reject snapshot2, commit index: %d, last included index: %d",
+			rf.me, rf.commitIndex, rf.log.LastIncludedIndex)
 		return
 	}
 	// IMPORTANT 必须在日志截断前先设置 index、term，否则会被截断掉真实信息
 	lastIncludedTerm := rf.log.entryAt(index).Term
-	rf.log.Entries = append([]LogEntry{{Term: 0, Command: nil}}, rf.log.Entries[index-rf.log.LastIncludedIndex+1:]...)
+	// (index, len)
+	rf.log.subFrom(index + 1)
+	rf.log.Entries = append([]LogEntry{{Term: lastIncludedTerm}}, rf.log.Entries...)
 	rf.log.LastIncludedTerm = lastIncludedTerm
 	rf.log.LastIncludedIndex = index
 	rf.snapshot = snapshot
@@ -474,8 +538,9 @@ func (rf *Raft) appendEntriesLoop() {
 			// 其它节点
 			prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
 			if prevLogIndex < rf.log.LastIncludedIndex {
-				// 已同步完成的序号小于	matchIndex 的，发送快照
+				// 已同步完成的序号小于 matchIndex 的，发送快照
 				// 因此快照已经覆盖了要发送的日志
+				// 如果是等于，那么会造成，即使没有快照，仍会优先发送快照
 				go rf.sendInstallSnapshotToPeer(peerId)
 			} else {
 				// 大于的，仍发送日志
@@ -508,8 +573,10 @@ func (rf *Raft) applyLogLoop() {
 			}
 			msgs = append(msgs, msg)
 		}
-		DPrintf("peer: %d, commit index: %d, last applied: %d, send msgs: %+v",
-			rf.me, rf.commitIndex, rf.lastApplied, msgs)
+		if len(msgs) > 0 {
+			DPrintf("peer: %d, commit index: %d, last applied: %d, send msgs: %+v",
+				rf.me, rf.commitIndex, rf.lastApplied, msgs)
+		}
 		rf.mu.Unlock()
 		for _, msg := range msgs {
 			rf.applyCh <- msg
@@ -533,21 +600,26 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	// 正常情况下，prevLogIndex = matchIndex
 	// 可能会存在 nextIndex 超过 rf.log 的情况
 	if nextIndex <= rf.log.size() {
+		prevLogIndex = nextIndex - 1
+	} else {
 		DPrintf("peer: %d nextIndex: %d bigger than size of log: %d",
 			rf.me, nextIndex, rf.log.size())
-		prevLogIndex = nextIndex - 1
+		prevLogIndex = rf.log.last() // 最后一个日志序号
 	}
-	// double check，检查 prevLogIndex 与 lastIncludeIndex
 	// 已经快照过的日志，无需再次同步
-	if /*rf.log.LastIncludedIndex != 0 &&*/ prevLogIndex < rf.log.LastIncludedIndex {
-		DPrintf("peer: %d sendAppendEntriesToPeer but reject, prevLogIndex: %d, lastIncludedIndex: %d",
+	if prevLogIndex < rf.log.LastIncludedIndex {
+		DPrintf("peer: %d sendAppendEntriesToPeer but reject, prevLogIndex: %d, LastIncludedIndex: %d",
 			rf.me, prevLogIndex, rf.log.LastIncludedIndex)
 		rf.mu.Unlock()
 		return
 	}
+	// 注意：这里的 prevLogTerm 很重要，如果错误就会导致日志无法同步
+	// 因此必须保证快照后，整个日志的任期、序号都是完整的
 	prevLogTerm = rf.log.entryAt(prevLogIndex).Term
-	// 待同步日志
-	entries = rf.log.getEntries(nextIndex - rf.log.first())
+	// 每次同步日志 [nextIndex: )
+	if nextIndex <= rf.log.size() {
+		entries = rf.log.getEntries(nextIndex)
+	}
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
@@ -635,6 +707,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	DPrintf("peer: %d handle AppendEntries, args: %+v ", rf.me, args)
+
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	if args.Term < rf.currentTerm {
@@ -653,7 +727,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.leaderId = args.LeaderId
 	rf.lastReceivedFromLeader = time.Now() // 更新日志、心跳时间
 	// 如果上一个同步日志序号小于快照序号
-	if args.PrevLogIndex < rf.log.LastIncludedIndex {
+	if args.PrevLogIndex < rf.log.LastIncludedIndex { // 29 29
 		reply.ConflictIndex = rf.log.LastIncludedIndex // 如果小于最小快照序号，则无需同步，直接告知其最小序号
 		reply.ConflictTerm = -1
 		return
@@ -699,8 +773,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// 追加日志中尚未存在的任何新条目
 	if entriesIndex < entriesSize {
-		// [0,insertIndex) 是之前已经同步好的日志
-		rf.log.subTo(insertIndex - rf.log.first())
+		// [0,insertIndex) 是之前已经同步好的日志，之后都是脏数据
+		rf.log.subTo(insertIndex)
 		rf.log.append(args.Entries[entriesIndex:]...)
 		rf.persist()
 	}
