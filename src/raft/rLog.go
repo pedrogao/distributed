@@ -48,8 +48,13 @@ func (l *rLog) entryAt(index int) LogEntry {
 }
 
 // append 追加日志
-func (l *rLog) append(entry ...LogEntry) {
-	l.Entries = append(l.Entries, entry...)
+func (l *rLog) append(entrys ...LogEntry) {
+	// data race: https://zhuanlan.zhihu.com/p/228166716
+	// copy 必须是 len，而不是 cap
+	tmp := make([]LogEntry, len(l.Entries), len(l.Entries)+len(entrys))
+	copy(tmp, l.Entries)
+	tmp = append(tmp, entrys...)
+	l.Entries = tmp
 }
 
 // subEntries Entries = Entries[from, to)
@@ -64,10 +69,10 @@ func (l *rLog) subEntries(from, to int) {
 	}
 	from -= l.LastIncludedIndex
 	to -= l.LastIncludedIndex
-	// tmp := make([]LogEntry, l.size())
-	// copy(tmp, l.Entries)
+	tmp := make([]LogEntry, len(l.Entries), len(l.Entries))
+	copy(tmp, l.Entries)
 	// copy on write, 避免 log data race
-	l.Entries = l.Entries[from:to]
+	l.Entries = tmp[from:to]
 }
 
 // subTo Entries = Entries[LastIncludedIndex, to)
