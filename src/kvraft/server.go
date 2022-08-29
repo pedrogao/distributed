@@ -78,9 +78,9 @@ type KVServer struct {
 	persister    *raft.Persister
 
 	// Your definitions here.
-	store       sync.Map // kv存储
-	recordMap   sync.Map // 操作记录
-	notifyMap   sync.Map
+	store       map[string]string       // kv存储
+	recordMap   map[int64]*clientRecord // 操作记录
+	notifyMap   map[int]chan *clientResp
 	lastApplied int64 // 最后已应用 command
 }
 
@@ -115,7 +115,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// get 请求是无需判断重复的，因为天然就无需 apply 多次，本身就具有幂等性
 	notify := make(chan *clientResp)
-	kv.notifyMap.Store(index, notify)
+	kv.guard(func() {
+		kv.notifyMap[index] = notify
+	})
 
 	select {
 	case resp := <-notify:
@@ -130,7 +132,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	// 删除无用的 notify
 	go func() {
-		kv.notifyMap.Delete(index)
+		kv.guard(func() {
+			delete(kv.notifyMap, index)
+		})
 	}()
 }
 
@@ -140,14 +144,16 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
+	kv.mu.Lock()
 	if kv.isLatestRequest(args.ClientId, args.CommandId) {
 		// 如果是重复提交
-		record, _ := kv.recordMap.Load(args.ClientId)
-		cr := record.(*clientRecord)
-		reply.Err = cr.Resp.Err // 使用上次的 Resp
+		record := kv.recordMap[args.ClientId]
+		reply.Err = record.Resp.Err // 使用上次的 Resp
 		DPrintf("%d PutAppend duplicate, args: %+v, reply: %+v ", kv.Me(), args, reply)
+		kv.mu.Unlock()
 		return
 	}
+	kv.mu.Unlock()
 
 	argOp := args.Op
 	op := Op{
@@ -172,7 +178,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// 只有 leader 需要 notify 客户端
 	notify := make(chan *clientResp)
-	kv.notifyMap.Store(index, notify)
+
+	kv.guard(func() {
+		kv.notifyMap[index] = notify
+	})
 
 	select {
 	case resp := <-notify: // 阻塞
@@ -186,7 +195,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	// 删除无用的 notify
 	go func() {
-		kv.notifyMap.Delete(index)
+		kv.guard(func() {
+			delete(kv.notifyMap, index)
+		})
 	}()
 }
 
@@ -196,14 +207,13 @@ func (kv *KVServer) Me() int {
 }
 
 func (kv *KVServer) isLatestRequest(clientId, commandId int64) bool {
-	record, ok := kv.recordMap.Load(clientId)
+	record, ok := kv.recordMap[clientId]
 	if !ok {
 		return false
 	}
-	cr := record.(*clientRecord)
 	// 等于：当前请求重复提交
 	// 小于：以前的请求重复提交
-	return commandId <= cr.CommandId
+	return commandId <= record.CommandId
 }
 
 func (kv *KVServer) apply() {
@@ -217,6 +227,8 @@ func (kv *KVServer) apply() {
 					DPrintf("%d discard apply op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
 					continue
 				}
+				// 记录 lastApplied
+				atomic.StoreInt64(&kv.lastApplied, int64(index))
 				command, ok := message.Command.(Op)
 				if !ok {
 					log.Fatalf("invalid message command: %+v", message.Command)
@@ -224,21 +236,22 @@ func (kv *KVServer) apply() {
 				clientId := command.ClientId
 				commandId := command.CommandId
 				resp := &clientResp{}
+				kv.mu.Lock()
 				switch command.Action {
 				case GetAction:
-					val, exists := kv.store.Load(command.Key) // 读取数据
+					val, exists := kv.store[command.Key] // 读取数据
 					if !exists {
 						resp.Err = ErrNoKey
 					} else {
 						resp.Err = OK
-						resp.Value = val.(string)
+						resp.Value = val
 					}
 					DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 				case PutAction, AppendAction: // put 更新，append 添加
 					if kv.isLatestRequest(clientId, commandId) {
 						// 如果是重复提交
-						record, _ := kv.recordMap.Load(clientId)
-						resp = record.(*clientRecord).Resp // 使用上次的 Resp
+						record, _ := kv.recordMap[clientId]
+						resp = record.Resp // 使用上次的 Resp
 						DPrintf("%d apply op exists, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					} else {
 						// 非重复提交
@@ -252,16 +265,16 @@ func (kv *KVServer) apply() {
 							Index:     index,
 							Resp:      resp,
 						}
-						kv.recordMap.Store(clientId, record)
+						kv.recordMap[clientId] = record
 						// 更新 store
 						// 注意：Append 是追加，put 是更新
-						old, exist := kv.store.Load(command.Key)
+						old, exist := kv.store[command.Key]
 						if command.Action == AppendAction && exist {
 							// 如果是 append 且已存在，那么将 Value 追加到后面
-							kv.store.Store(command.Key, old.(string)+command.Value)
+							kv.store[command.Key] = old + command.Value
 						} else {
 							// 否则统一当成 put 处理
-							kv.store.Store(command.Key, command.Value)
+							kv.store[command.Key] = command.Value
 						}
 						DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					}
@@ -274,42 +287,46 @@ func (kv *KVServer) apply() {
 				// 节点状态发生了变更，那么 term 肯定会变，因此需要判断
 				if term == message.CommandTerm && isLeader {
 					// 注意：只有 leader 会收到请求
-					notify, exist := kv.notifyMap.Load(index)
+					notify, exist := kv.notifyMap[index]
 					DPrintf("%d notify op, exist: %+v, action: %+v, Resp: %+v ", kv.Me(), exist, command.Action, resp)
 					if exist {
 						// 为啥在任期一致且是leader的情况下，会存在 notify 不存在的情况了？
 						// 超时会删除 notify，因此重试的时候会找不到
-						notify.(chan *clientResp) <- resp
+						notify <- resp
 					}
 				}
-				// 记录 lastApplied
-				atomic.StoreInt64(&kv.lastApplied, int64(index))
-				//  写 snapshot
+				// 主动 snapshot
 				if kv.needSnapshot() {
 					kv.doSnapshot(index)
 				}
+				kv.mu.Unlock()
 			} else if message.SnapshotValid {
-				if int64(message.SnapshotIndex) < atomic.LoadInt64(&kv.lastApplied) {
+				// 处理快照
+				// 如果快照序号小于等于已应用的序号，那么无需安装快照
+				if atomic.LoadInt64(&kv.lastApplied) >= int64(message.SnapshotIndex) {
 					DPrintf("%d discard snapshot op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
 					continue
 				}
 				DPrintf("%d request for snapshot, message: %+v ", kv.Me(), message)
-				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex,
-					message.Snapshot) {
+				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex, message.Snapshot) {
 					DPrintf("%d request for snapshot successful, message: %+v ", kv.Me(), message)
 					// follower 读快照
-					err := kv.readSnapshot(message.Snapshot) // 读取快照数据，store & record
+					store, recordMap, err := kv.decodeSnapshot(message.Snapshot) // 读取快照数据，store & record
 					if err != nil {
 						log.Fatalf("read snapshot err: %+v", message)
 					}
-					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
-					// 清空 notify
-					kv.notifyMap.Range(func(key, notify any) bool {
-						notify.(chan *clientResp) <- &clientResp{
-							Err: ErrWrongLeader,
-						}
-						return true
+					kv.guard(func() {
+						kv.store = store
+						kv.recordMap = recordMap
+
+						// 清空 notify，对于小于
+						//for _, notify := range kv.notifyMap {
+						//	notify <- &clientResp{
+						//		Err: ErrNoLeader,
+						//	}
+						//}
 					})
+					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
 				}
 			} else {
 				log.Fatalf("invalid message: %+v", message)
@@ -319,9 +336,6 @@ func (kv *KVServer) apply() {
 }
 
 func (kv *KVServer) needSnapshot() bool {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	if kv.maxraftstate < 0 {
 		return false
 	}
@@ -332,25 +346,22 @@ func (kv *KVServer) needSnapshot() bool {
 
 func (kv *KVServer) doSnapshot(index int) {
 	DPrintf("%d do snapshot, index: %d ", kv.Me(), index)
-	snapshotBytes, err := kv.writeSnapshot()
+	snapshotBytes, err := kv.encodeState()
 	if err != nil {
-		log.Fatalf("doSnawriteSnapshot err: %+v", err)
+		log.Fatalf("do snapshot err: %+v", err)
 	}
 	kv.rf.Snapshot(index, snapshotBytes)
 }
 
-func (kv *KVServer) writeSnapshot() ([]byte, error) {
+func (kv *KVServer) encodeState() ([]byte, error) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
-	m1 := mapUnSync(&kv.store)
-	err := e.Encode(m1)
+	err := e.Encode(kv.store)
 	if err != nil {
 		return nil, err
 	}
-
-	m2 := mapUnSync(&kv.recordMap)
-	err = e.Encode(m2)
+	err = e.Encode(kv.recordMap)
 	if err != nil {
 		return nil, err
 	}
@@ -358,31 +369,32 @@ func (kv *KVServer) writeSnapshot() ([]byte, error) {
 	return w.Bytes(), nil
 }
 
-func (kv *KVServer) readSnapshot(data []byte) error {
+func (kv *KVServer) decodeSnapshot(data []byte) (store map[string]string,
+	recordMap map[int64]*clientRecord, err error) {
 	if len(data) == 0 {
-		return fmt.Errorf("snapshot data empty")
+		err = fmt.Errorf("snapshot data empty")
+		return
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 
-	r1 := map[any]any{} // kv存储
-	r2 := map[any]any{} // 操作记录
-
-	err := d.Decode(r1)
+	err = d.Decode(&store)
 	if err != nil {
-		return err
+		return
+	}
+	err = d.Decode(&recordMap)
+	if err != nil {
+		return
 	}
 
-	err = d.Decode(r2)
-	if err != nil {
-		return err
-	}
+	return
+}
 
+func (kv *KVServer) guard(fn func()) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.store = *mapSync(r1)
-	kv.recordMap = *mapSync(r2)
-	return nil
+
+	fn()
 }
 
 func (kv *KVServer) Kill() {
@@ -427,9 +439,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.store = sync.Map{}
-	kv.recordMap = sync.Map{}
-	kv.notifyMap = sync.Map{}
+	kv.store = map[string]string{}
+	kv.recordMap = map[int64]*clientRecord{}
+	kv.notifyMap = map[int]chan *clientResp{}
 	// apply & snapshot loop
 	go kv.apply()
 
