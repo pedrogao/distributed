@@ -426,6 +426,7 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 	if dur > numOps*timePerOp {
 		t.Fatalf("Operations completed too slowly %v/op > %v/op\n", dur/numOps, timePerOp)
 	}
+	t.Logf("Operations completed %v/op vs %v/op\n", dur/numOps, timePerOp)
 
 	cfg.end()
 }
@@ -435,6 +436,7 @@ func TestBasic3A(t *testing.T) {
 	GenericTest(t, "3A", 1, 5, false, false, false, -1, false)
 }
 
+// https://www.cnblogs.com/sun-lingyu/p/14902163.html
 func TestSpeed3A(t *testing.T) {
 	GenericTestSpeed(t, "3A", -1)
 }

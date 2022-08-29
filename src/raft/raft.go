@@ -168,12 +168,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// Don't implement Figure 13's offset mechanism for splitting up the snapshot.
 	// leader任期大，那么成为 follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.becomeFollower(args.Term, false)
 		rf.persist()
 	}
 	// 与 leader 任期相同，但自己不是 follower，那么称为 follower
 	if rf.state != Follower {
-		rf.becomeFollower(args.Term)
+		rf.becomeFollower(args.Term, false)
 		rf.persist()
 	}
 	// 更新 leader元数据
@@ -236,7 +236,7 @@ func (rf *Raft) sendInstallSnapshotToPeer(peerId int) {
 	}
 
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(reply.Term)
+		rf.becomeFollower(reply.Term, false)
 		// 你的任期大，我成为你的追随者
 		rf.leaderId = peerId
 		rf.persist()
@@ -334,6 +334,9 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 		})
 		DPrintf("peer: %d, index: %d, start command: %+v", rf.me, index, command)
 		rf.persist()
+		// https://www.jianshu.com/p/8fc46f12a106
+		// PERF leader新增日志后，立马发送日志到从节点
+		rf.sendAppendLogs()
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
 	}
@@ -411,7 +414,7 @@ func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
 
 	if reply.Term > rf.currentTerm {
 		// 发现任期大的，成为 Follower，然后返回
-		rf.becomeFollower(reply.Term)
+		rf.becomeFollower(reply.Term, false)
 		rf.persist()
 		return
 	}
@@ -456,7 +459,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	// 如果你的任期大，那么我就成为 Follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.becomeFollower(args.Term, false)
 		rf.persist()
 	}
 	upToDate := false
@@ -484,11 +487,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // state operations
 //
 
-func (rf *Raft) becomeFollower(term int) {
+func (rf *Raft) becomeFollower(term int, heartbeat bool) {
+	// 收到心跳时，不更新 votedFor
+	if !heartbeat || rf.state != Follower {
+		rf.votedFor = -1 // 追随者重置投票
+	}
 	rf.currentTerm = term
 	rf.state = Follower
-	// TODO 收到心跳时，不更新 votedFor
-	rf.votedFor = -1 // 追随者重置投票
 }
 
 func (rf *Raft) becomeLeader() {
@@ -527,28 +532,32 @@ func (rf *Raft) appendEntriesLoop() {
 			return
 		}
 
-		for peerId := range rf.peers {
-			// 当前节点
-			if peerId == rf.me {
-				// 更新自己的 nextIndex 和 matchIndex
-				rf.nextIndex[peerId] = rf.log.size()
-				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
-				continue
-			}
-			// 其它节点
-			prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
-			if prevLogIndex < rf.log.LastIncludedIndex {
-				// 已同步完成的序号小于 matchIndex 的，发送快照
-				// 因此快照已经覆盖了要发送的日志
-				// 如果是等于，那么会造成，即使没有快照，仍会优先发送快照
-				go rf.sendInstallSnapshotToPeer(peerId)
-			} else {
-				// 大于的，仍发送日志
-				go rf.sendAppendEntriesToPeer(peerId)
-			}
-		}
+		rf.sendAppendLogs()
 		rf.mu.Unlock()
 		time.Sleep(heartbeatInterval)
+	}
+}
+
+func (rf *Raft) sendAppendLogs() {
+	for peerId := range rf.peers {
+		// 当前节点
+		if peerId == rf.me {
+			// 更新自己的 nextIndex 和 matchIndex
+			rf.nextIndex[peerId] = rf.log.size()
+			rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
+			continue
+		}
+		// 其它节点
+		prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
+		if prevLogIndex < rf.log.LastIncludedIndex {
+			// 已同步完成的序号小于 matchIndex 的，发送快照
+			// 因此快照已经覆盖了要发送的日志
+			// 如果是等于，那么会造成，即使没有快照，仍会优先发送快照
+			go rf.sendInstallSnapshotToPeer(peerId)
+		} else {
+			// 大于的，仍发送日志
+			go rf.sendAppendEntriesToPeer(peerId)
+		}
 	}
 }
 
@@ -643,7 +652,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(reply.Term)
+		rf.becomeFollower(reply.Term, false)
 		rf.leaderId = peerId
 		rf.persist()
 		return
@@ -716,12 +725,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// 如果你大，那就成为 follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.becomeFollower(args.Term, true)
 		rf.leaderId = args.LeaderId
 		rf.persist()
 	}
 	if rf.state != Follower {
-		rf.becomeFollower(args.Term)
+		rf.becomeFollower(args.Term, true)
 		rf.persist()
 	}
 	rf.leaderId = args.LeaderId
