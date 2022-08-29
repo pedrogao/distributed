@@ -245,7 +245,6 @@ func (rf *Raft) sendInstallSnapshotToPeer(peerId int) {
 	}
 	// 注意，快照和日志同步一样，需要更新 matchIndex 和 nextIndex
 	// 发送完快照后，更新了 matchIndex 和 nextIndex，因此在快照期间的日志同步将需要重新来
-	// FIXME? 如果已同步的序号小，才接收快照
 	if rf.matchIndex[peerId] < args.LastIncludedIndex {
 		rf.matchIndex[peerId] = args.LastIncludedIndex
 		rf.nextIndex[peerId] = args.LastIncludedIndex + 1
@@ -488,6 +487,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) becomeFollower(term int) {
 	rf.currentTerm = term
 	rf.state = Follower
+	// TODO 收到心跳时，不更新 votedFor
 	rf.votedFor = -1 // 追随者重置投票
 }
 

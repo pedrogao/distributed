@@ -250,7 +250,7 @@ func (kv *KVServer) apply() {
 				case PutAction, AppendAction: // put 更新，append 添加
 					if kv.isLatestRequest(clientId, commandId) {
 						// 如果是重复提交
-						record, _ := kv.recordMap[clientId]
+						record := kv.recordMap[clientId]
 						resp = record.Resp // 使用上次的 Resp
 						DPrintf("%d apply op exists, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					} else {
@@ -313,18 +313,18 @@ func (kv *KVServer) apply() {
 					// follower 读快照
 					store, recordMap, err := kv.decodeSnapshot(message.Snapshot) // 读取快照数据，store & record
 					if err != nil {
-						log.Fatalf("read snapshot err: %+v", message)
+						log.Fatalf("read snapshot err: %v", err)
 					}
 					kv.guard(func() {
 						kv.store = store
 						kv.recordMap = recordMap
 
-						// 清空 notify，对于小于
-						//for _, notify := range kv.notifyMap {
-						//	notify <- &clientResp{
-						//		Err: ErrNoLeader,
-						//	}
-						//}
+						// 清空 notify，拒绝所有的请求，快照完成后重新接收请求
+						for _, notify := range kv.notifyMap {
+							notify <- &clientResp{
+								Err: ErrNoLeader,
+							}
+						}
 					})
 					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
 				}
@@ -348,7 +348,7 @@ func (kv *KVServer) doSnapshot(index int) {
 	DPrintf("%d do snapshot, index: %d ", kv.Me(), index)
 	snapshotBytes, err := kv.encodeState()
 	if err != nil {
-		log.Fatalf("do snapshot err: %+v", err)
+		log.Fatalf("do snapshot err: %v", err)
 	}
 	kv.rf.Snapshot(index, snapshotBytes)
 }
@@ -439,8 +439,25 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.store = map[string]string{}
-	kv.recordMap = map[int64]*clientRecord{}
+	snapshot := persister.ReadSnapshot()
+	var (
+		store     map[string]string
+		recordMap map[int64]*clientRecord
+		err       error
+	)
+	if len(snapshot) > 0 {
+		store, recordMap, err = kv.decodeSnapshot(snapshot) // 读取快照数据，store & record
+	} else {
+		store = map[string]string{}
+		recordMap = map[int64]*clientRecord{}
+	}
+
+	if err != nil {
+		log.Fatalf("% peer read snapshot err: %v", me, err)
+	}
+
+	kv.store = store
+	kv.recordMap = recordMap
 	kv.notifyMap = map[int]chan *clientResp{}
 	// apply & snapshot loop
 	go kv.apply()

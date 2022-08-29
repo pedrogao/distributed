@@ -79,7 +79,7 @@ leader 发送快照后，更新 match、next index 时，注意比较 lastInclud
 另外，节点安装快照时：
 
 ```go
-	rf.commitIndex = maxInt(rf.commitIndex, lastIncludedIndex)
+  rf.commitIndex = maxInt(rf.commitIndex, lastIncludedIndex)
   rf.lastApplied = maxInt(rf.lastApplied, lastIncludedIndex)
 ```
 
