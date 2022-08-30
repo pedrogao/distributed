@@ -168,12 +168,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// Don't implement Figure 13's offset mechanism for splitting up the snapshot.
 	// leader任期大，那么成为 follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term, false)
+		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
 	// 与 leader 任期相同，但自己不是 follower，那么称为 follower
 	if rf.state != Follower {
-		rf.becomeFollower(args.Term, false)
+		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
 	// 更新 leader元数据
@@ -194,10 +194,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	DPrintf("peer: %d, send snapshot msg commit index: %d, last applied: %d, SnapshotTerm: %d, SnapshotIndex: %d ",
 		rf.me, rf.commitIndex, rf.lastApplied, msg.SnapshotTerm, msg.SnapshotIndex)
-	go func() {
-		// 应用快照 msg
-		rf.applyCh <- msg
-	}()
+	// 应用快照 msg
+	rf.applyCh <- msg
 }
 
 // 发送 InstallSnapshot
@@ -236,7 +234,7 @@ func (rf *Raft) sendInstallSnapshotToPeer(peerId int) {
 	}
 
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(reply.Term, false)
+		rf.becomeFollower(reply.Term)
 		// 你的任期大，我成为你的追随者
 		rf.leaderId = peerId
 		rf.persist()
@@ -336,11 +334,25 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 		rf.persist()
 		// https://www.jianshu.com/p/8fc46f12a106
 		// PERF leader新增日志后，立马发送日志到从节点
-		rf.sendAppendLogs()
-		rf.nextIndex[rf.me] = index + 1
-		rf.matchIndex[rf.me] = index
+		// 3A
+		// rf.sendAppendLogs()
+		// rf.nextIndex[rf.me] = index + 1
+		// rf.matchIndex[rf.me] = index
 	}
 	return index, term, isLeader
+}
+
+func (rf *Raft) sendAppendLogs() {
+	for peerId := range rf.peers {
+		// 当前节点
+		if peerId == rf.me {
+			// 更新自己的 nextIndex 和 matchIndex
+			rf.nextIndex[peerId] = rf.log.size()
+			rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
+			continue
+		}
+		go rf.sendAppendEntriesToPeer(peerId)
+	}
 }
 
 func (rf *Raft) Kill() {
@@ -414,7 +426,7 @@ func (rf *Raft) sendRequestVoteToPeer(peerId int, votes *uint32) {
 
 	if reply.Term > rf.currentTerm {
 		// 发现任期大的，成为 Follower，然后返回
-		rf.becomeFollower(reply.Term, false)
+		rf.becomeFollower(reply.Term)
 		rf.persist()
 		return
 	}
@@ -459,7 +471,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	// 如果你的任期大，那么我就成为 Follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term, false)
+		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
 	upToDate := false
@@ -487,11 +499,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // state operations
 //
 
-func (rf *Raft) becomeFollower(term int, heartbeat bool) {
+func (rf *Raft) becomeFollower(term int /*, heartbeat bool*/) {
 	// 收到心跳时，不更新 votedFor
-	if !heartbeat || rf.state != Follower {
-		rf.votedFor = -1 // 追随者重置投票
-	}
+	// if !heartbeat || rf.state != Follower {
+	rf.votedFor = -1 // 追随者重置投票
+	// }
 	rf.currentTerm = term
 	rf.state = Follower
 }
@@ -532,32 +544,28 @@ func (rf *Raft) appendEntriesLoop() {
 			return
 		}
 
-		rf.sendAppendLogs()
+		for peerId := range rf.peers {
+			// 当前节点
+			if peerId == rf.me {
+				// 更新自己的 nextIndex 和 matchIndex
+				rf.nextIndex[peerId] = rf.log.size()
+				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
+				continue
+			}
+			// 其它节点
+			prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
+			if prevLogIndex < rf.log.LastIncludedIndex {
+				// 已同步完成的序号小于 matchIndex 的，发送快照
+				// 因此快照已经覆盖了要发送的日志
+				// 如果是等于，那么会造成，即使没有快照，仍会优先发送快照
+				go rf.sendInstallSnapshotToPeer(peerId)
+			} else {
+				// 大于的，仍发送日志
+				go rf.sendAppendEntriesToPeer(peerId)
+			}
+		}
 		rf.mu.Unlock()
 		time.Sleep(heartbeatInterval)
-	}
-}
-
-func (rf *Raft) sendAppendLogs() {
-	for peerId := range rf.peers {
-		// 当前节点
-		if peerId == rf.me {
-			// 更新自己的 nextIndex 和 matchIndex
-			rf.nextIndex[peerId] = rf.log.size()
-			rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // nextIndex - 1
-			continue
-		}
-		// 其它节点
-		prevLogIndex := rf.nextIndex[peerId] - 1 // 已同步完成的序号
-		if prevLogIndex < rf.log.LastIncludedIndex {
-			// 已同步完成的序号小于 matchIndex 的，发送快照
-			// 因此快照已经覆盖了要发送的日志
-			// 如果是等于，那么会造成，即使没有快照，仍会优先发送快照
-			go rf.sendInstallSnapshotToPeer(peerId)
-		} else {
-			// 大于的，仍发送日志
-			go rf.sendAppendEntriesToPeer(peerId)
-		}
 	}
 }
 
@@ -566,6 +574,8 @@ func (rf *Raft) applyLogLoop() {
 	for !rf.killed() {
 		time.Sleep(applyInterval)
 		rf.mu.Lock()
+		rf.commitIndex = maxInt(rf.commitIndex, rf.log.LastIncludedIndex)
+		rf.lastApplied = maxInt(rf.lastApplied, rf.log.LastIncludedIndex)
 		msgs := make([]ApplyMsg, 0)
 		for rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++ // 上一个应用的++
@@ -603,12 +613,12 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 	// PrevLogIndex: 紧跟在新日志之前的日志项的 index，是 leader认为 follower 当前可能已经同步到了的最高日志项的 index
 	// 对于第i个server，就是nextIndex[i] - 1。
 	// leader 中上一次同步的日志索引
-	prevLogTerm := 0
+	prevLogTerm := -1
 	prevLogIndex := 0
 	entries := make([]LogEntry, 0)
 	// 正常情况下，prevLogIndex = matchIndex
 	// 可能会存在 nextIndex 超过 rf.log 的情况
-	if nextIndex <= rf.log.size() {
+	if nextIndex < rf.log.size() {
 		prevLogIndex = nextIndex - 1
 	} else {
 		DPrintf("peer: %d nextIndex: %d bigger than size of log: %d",
@@ -652,7 +662,7 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(reply.Term, false)
+		rf.becomeFollower(reply.Term)
 		rf.leaderId = peerId
 		rf.persist()
 		return
@@ -720,23 +730,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	// 任期小的同步，直接返回
 	if args.Term < rf.currentTerm {
 		return
 	}
 	// 如果你大，那就成为 follower
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term, true)
+		rf.becomeFollower(args.Term)
 		rf.leaderId = args.LeaderId
 		rf.persist()
 	}
 	if rf.state != Follower {
-		rf.becomeFollower(args.Term, true)
+		rf.becomeFollower(args.Term)
 		rf.persist()
 	}
 	rf.leaderId = args.LeaderId
 	rf.lastReceivedFromLeader = time.Now() // 更新日志、心跳时间
 	// 如果上一个同步日志序号小于快照序号
-	if args.PrevLogIndex < rf.log.LastIncludedIndex { // 29 29
+	if args.PrevLogIndex < rf.log.LastIncludedIndex {
 		reply.ConflictIndex = rf.log.LastIncludedIndex // 如果小于最小快照序号，则无需同步，直接告知其最小序号
 		reply.ConflictTerm = -1
 		return
