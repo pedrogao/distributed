@@ -131,11 +131,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		DPrintf("%d Get Op timeout, op: %+v ", kv.Me(), op)
 	}
 	// 删除无用的 notify
-	go func() {
-		kv.guard(func() {
-			delete(kv.notifyMap, index)
-		})
-	}()
+	kv.guard(func() {
+		delete(kv.notifyMap, index)
+	})
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -194,11 +192,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrTimeout
 	}
 	// 删除无用的 notify
-	go func() {
-		kv.guard(func() {
-			delete(kv.notifyMap, index)
-		})
-	}()
+	kv.guard(func() {
+		delete(kv.notifyMap, index)
+	})
 }
 
 func (kv *KVServer) Me() int {

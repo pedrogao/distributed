@@ -1,6 +1,9 @@
 package shardkv
 
 import (
+	"bytes"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -11,10 +14,53 @@ import (
 	"pedrogao/distributed/raft"
 )
 
+var (
+	// Debug Debugging
+	Debug  = false
+	logger = log.New(log.WithSkipLevel(3))
+)
+
+func init() {
+	if os.Getenv("debug") != "" || Debug {
+		logger.SetOptions(log.WithLevel(log.DebugLevel))
+	} else {
+		logger.SetOptions(log.WithLevel(log.ErrorLevel))
+	}
+}
+
+func DPrintf(format string, a ...any) {
+	logger.Debugf(format, a...)
+}
+
+type Action = string
+
+const (
+	GetAction    Action = "Get"
+	PutAction    Action = "Put"
+	AppendAction Action = "Append"
+)
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Action string
+	Key    string
+	Value  string
+
+	CommandId int64
+	ClientId  int64
+}
+
+type clientRecord struct {
+	CommandId int64
+	Index     int
+	Resp      *clientResp
+}
+
+type clientResp struct {
+	Value string
+	Err   Err
 }
 
 type ShardKV struct {
@@ -28,7 +74,11 @@ type ShardKV struct {
 	maxraftstate int                 // snapshot if log grows this big
 
 	// Your definitions here.
-	dead int32
+	dead        int32
+	store       map[string]string       // kv存储
+	recordMap   map[int64]*clientRecord // 操作记录
+	notifyMap   map[int]chan *clientResp
+	lastApplied int64 // 最后已应用 command
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -68,6 +118,50 @@ func (kv *ShardKV) apply() {
 			log.Fatalf("invalid message: %+v", message)
 		}
 	}
+}
+
+func (kv *ShardKV) encodeState() ([]byte, error) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	err := e.Encode(kv.store)
+	if err != nil {
+		return nil, err
+	}
+	err = e.Encode(kv.recordMap)
+	if err != nil {
+		return nil, err
+	}
+
+	return w.Bytes(), nil
+}
+
+func (kv *ShardKV) decodeSnapshot(data []byte) (store map[string]string,
+	recordMap map[int64]*clientRecord, err error) {
+	if len(data) == 0 {
+		err = fmt.Errorf("snapshot data empty")
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	err = d.Decode(&store)
+	if err != nil {
+		return
+	}
+	err = d.Decode(&recordMap)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func (kv *ShardKV) guard(fn func()) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	fn()
 }
 
 // StartServer
@@ -118,6 +212,27 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
+	snapshot := persister.ReadSnapshot()
+	var (
+		store     map[string]string
+		recordMap map[int64]*clientRecord
+		err       error
+	)
+	if len(snapshot) > 0 {
+		store, recordMap, err = kv.decodeSnapshot(snapshot) // 读取快照数据，store & record
+	} else {
+		store = map[string]string{}
+		recordMap = map[int64]*clientRecord{}
+	}
+
+	if err != nil {
+		log.Fatalf("% peer read snapshot err: %v", me, err)
+	}
+
+	kv.store = store
+	kv.recordMap = recordMap
+	kv.notifyMap = map[int]chan *clientResp{}
 
 	return kv
 }

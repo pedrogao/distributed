@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"sync"
 	"time"
 )
 
@@ -45,24 +44,4 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
-}
-
-func mapSync(m map[any]any) *sync.Map {
-	s := &sync.Map{}
-	for k, v := range m {
-		s.Store(k, v)
-	}
-
-	return s
-}
-
-func mapUnSync(m *sync.Map) map[any]any {
-	r := map[any]any{}
-
-	m.Range(func(k, v any) bool {
-		r[k] = v
-		return true
-	})
-
-	return r
 }

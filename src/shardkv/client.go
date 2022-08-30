@@ -43,8 +43,8 @@ type Clerk struct {
 	config  shardctrler.Config
 	makeEnd func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
-	ClientId int64
-	Seq      int
+	clientId int64
+	seq      int
 }
 
 // MakeClerk
@@ -61,8 +61,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientE
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.makeEnd = makeEnd
 	// You'll have to add code here.
-	ck.ClientId = nrand()
-	ck.Seq = 0
+	ck.clientId = nrand()
+	ck.seq = 0
 	return ck
 }
 
@@ -73,16 +73,19 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientE
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	args := GetArgs{
+		Key:      key,
+		Seq:      ck.seq,
+		ClientId: ck.clientId,
+	}
 
 	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
+		shard := key2shard(key)        // 拿到分片id
+		gid := ck.config.Shards[shard] // 拿到分组id
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
-				srv := ck.makeEnd(servers[si])
+				srv := ck.makeEnd(servers[si]) // client
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -107,10 +110,13 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+	args := PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		Seq:      ck.seq,
+		ClientId: ck.clientId,
+	}
 
 	for {
 		shard := key2shard(key)
