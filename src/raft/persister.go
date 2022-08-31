@@ -15,6 +15,7 @@ type Persister struct {
 	mu        sync.Mutex
 	raftstate []byte
 	snapshot  []byte
+	kv        []byte
 }
 
 func MakePersister() *Persister {
@@ -75,4 +76,16 @@ func (ps *Persister) SnapshotSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return len(ps.snapshot)
+}
+
+func (ps *Persister) SaveKV(kv []byte) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.kv = clone(kv)
+}
+
+func (ps *Persister) ReadKV() []byte {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return clone(ps.kv)
 }

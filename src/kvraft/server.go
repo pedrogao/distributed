@@ -12,6 +12,7 @@ import (
 	"pedrogao/distributed/labrpc"
 	"pedrogao/distributed/raft"
 
+	"github.com/pedrogao/common"
 	"github.com/pedrogao/log"
 )
 
@@ -78,10 +79,11 @@ type KVServer struct {
 	persister    *raft.Persister
 
 	// Your definitions here.
-	store       map[string]string       // kv存储
-	recordMap   map[int64]*clientRecord // 操作记录
-	notifyMap   map[int]chan *clientResp
-	lastApplied int64 // 最后已应用 command
+	store        map[string]string       // kv存储
+	recordMap    map[int64]*clientRecord // 操作记录
+	notifyMap    map[int]chan *clientResp
+	lastApplied  int64 // 最后已应用 command
+	snapshotCond *common.Cond
 }
 
 // Get 如果 kvserver 不是多数的一部分，则不应完成 Get() RPC（这样它就不会提供陈旧的数据）。
@@ -92,6 +94,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if kv.killed() {
 		reply.Err = ErrShutdown
 		return
+	}
+
+	// 快照期间，不接受请求，避免数据冲突
+	kv.mu.Lock()
+	var snapshotCond = kv.snapshotCond
+	kv.mu.Unlock()
+
+	if snapshotCond != nil {
+		_, ok := snapshotCond.WaitWithTimeout(defaultTimeout)
+		if !ok {
+			reply.Err = ErrTimeout
+			return
+		}
 	}
 
 	// submit op
@@ -140,6 +155,19 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if kv.killed() {
 		reply.Err = ErrShutdown
 		return
+	}
+
+	// 快照期间，不接受请求，避免数据冲突
+	kv.mu.Lock()
+	var snapshotCond = kv.snapshotCond
+	kv.mu.Unlock()
+
+	if snapshotCond != nil {
+		_, ok := snapshotCond.WaitWithTimeout(defaultTimeout)
+		if !ok {
+			reply.Err = ErrTimeout
+			return
+		}
 	}
 
 	kv.mu.Lock()
@@ -223,6 +251,7 @@ func (kv *KVServer) apply() {
 					DPrintf("%d discard apply op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
 					continue
 				}
+				kv.mu.Lock()
 				// 记录 lastApplied
 				atomic.StoreInt64(&kv.lastApplied, int64(index))
 				command, ok := message.Command.(Op)
@@ -232,7 +261,6 @@ func (kv *KVServer) apply() {
 				clientId := command.ClientId
 				commandId := command.CommandId
 				resp := &clientResp{}
-				kv.mu.Lock()
 				switch command.Action {
 				case GetAction:
 					val, exists := kv.store[command.Key] // 读取数据
@@ -275,6 +303,7 @@ func (kv *KVServer) apply() {
 						DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					}
 				}
+				kv.saveKV()
 				// leader回应客户端请求
 				term, isLeader := kv.rf.GetState()
 				// 任期相同，且是 leader 才需要通过对应的客户端
@@ -303,6 +332,8 @@ func (kv *KVServer) apply() {
 					DPrintf("%d discard snapshot op, message: %+v, lastApplied: %+v ", kv.Me(), message, kv.lastApplied)
 					continue
 				}
+				kv.mu.Lock()
+				kv.snapshotCond = common.NewCond()
 				DPrintf("%d request for snapshot, message: %+v ", kv.Me(), message)
 				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex, message.Snapshot) {
 					DPrintf("%d request for snapshot successful, message: %+v ", kv.Me(), message)
@@ -311,19 +342,13 @@ func (kv *KVServer) apply() {
 					if err != nil {
 						log.Fatalf("read snapshot err: %v", err)
 					}
-					kv.guard(func() {
-						kv.store = store
-						kv.recordMap = recordMap
-
-						// 清空 notify，拒绝所有的请求，快照完成后重新接收请求
-						for _, notify := range kv.notifyMap {
-							notify <- &clientResp{
-								Err: ErrWrongLeader,
-							}
-						}
-					})
+					kv.store = store
+					kv.recordMap = recordMap
 					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
+					kv.saveKV()
 				}
+				kv.snapshotCond = nil
+				kv.mu.Unlock()
 			} else {
 				log.Fatalf("invalid message: %+v", message)
 			}
@@ -386,6 +411,59 @@ func (kv *KVServer) decodeSnapshot(data []byte) (store map[string]string,
 	return
 }
 
+func (kv *KVServer) saveKV() {
+	data, err := kv.encodeKV()
+	if err != nil {
+		log.Fatalf("encode err: %+v", err)
+	}
+	kv.persister.SaveKV(data)
+}
+
+func (kv *KVServer) encodeKV() ([]byte, error) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	err := e.Encode(kv.lastApplied)
+	if err != nil {
+		return nil, err
+	}
+	err = e.Encode(kv.store)
+	if err != nil {
+		return nil, err
+	}
+	err = e.Encode(kv.recordMap)
+	if err != nil {
+		return nil, err
+	}
+
+	return w.Bytes(), nil
+}
+
+func (kv *KVServer) decodeKV(data []byte) (lastApplied int64, store map[string]string,
+	recordMap map[int64]*clientRecord, err error) {
+	if len(data) == 0 {
+		err = fmt.Errorf("kv data empty")
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	err = d.Decode(&lastApplied)
+	if err != nil {
+		return
+	}
+	err = d.Decode(&store)
+	if err != nil {
+		return
+	}
+	err = d.Decode(&recordMap)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
 func (kv *KVServer) guard(fn func()) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -421,24 +499,27 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	snapshot := persister.ReadSnapshot()
+	data := persister.ReadKV()
 	var (
-		store     map[string]string
-		recordMap map[int64]*clientRecord
-		err       error
+		store       map[string]string
+		recordMap   map[int64]*clientRecord
+		err         error
+		lastApplied int64
 	)
-	if len(snapshot) > 0 {
-		store, recordMap, err = kv.decodeSnapshot(snapshot) // 读取快照数据，store & record
+	if len(data) > 0 {
+		lastApplied, store, recordMap, err = kv.decodeKV(data)
 	} else {
 		store = map[string]string{}
 		recordMap = map[int64]*clientRecord{}
+		lastApplied = 0
 	}
 
 	if err != nil {
-		log.Fatalf("% peer read snapshot err: %v", me, err)
+		log.Fatalf("%d peer read snapshot err: %v", me, err)
 	}
 
 	kv.store = store
+	kv.lastApplied = lastApplied
 	kv.recordMap = recordMap
 	kv.notifyMap = map[int]chan *clientResp{}
 	// apply & snapshot loop

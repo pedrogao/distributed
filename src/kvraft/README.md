@@ -37,6 +37,10 @@ Raft 使用 SaveStateAndSnapshot() 将每个快照存储在持久化对象中，
 
 kvserver 必须能够跨检查点检测日志中的重复操作，因此您用来检测它们的任何状态都必须包含在快照中。
 
+## TODO
+
+Test: unreliable net, restarts, snapshots, many clients (3B) ...
+
 ## 参考资料
 
 - https://pdos.csail.mit.edu/6.824/labs/lab-kvraft.html

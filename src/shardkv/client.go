@@ -78,7 +78,7 @@ func (ck *Clerk) Get(key string) string {
 		Seq:      ck.seq,
 		ClientId: ck.clientId,
 	}
-
+	internal := time.Millisecond * 10
 	for {
 		shard := key2shard(key)        // 拿到分片id
 		gid := ck.config.Shards[shard] // 拿到分组id
@@ -91,10 +91,23 @@ func (ck *Clerk) Get(key string) string {
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
-				if ok && (reply.Err == ErrWrongGroup) {
+				if ok && reply.Err == ErrWrongGroup {
+					// 错误分组，那么 break 更换分组
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				if ok && reply.Err == ErrNoKey {
+					// no key
+					return ""
+				}
+				if ok && reply.Err == ErrNoLeader {
+					// 还没有选出 leader，休眠一会儿
+					time.Sleep(internal)
+					continue
+				}
+				if ok && reply.Err == ErrShutdown {
+					return ""
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -117,7 +130,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		Seq:      ck.seq,
 		ClientId: ck.clientId,
 	}
-
+	internal := time.Millisecond * 10
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -133,6 +146,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				if ok && reply.Err == ErrNoLeader {
+					// 还没有选出 leader，休眠一会儿
+					time.Sleep(internal)
+					continue
+				}
+				if ok && reply.Err == ErrShutdown {
+					return
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
