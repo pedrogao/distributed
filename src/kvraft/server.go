@@ -213,11 +213,11 @@ func (kv *KVServer) isLatestRequest(clientId, commandId int64) bool {
 }
 
 func (kv *KVServer) apply() {
-	defer func() {
+	defer kv.guard(func() {
 		for _, ce := range kv.notifyMap {
 			ce <- &clientResp{Err: ErrWrongLeader}
 		}
-	}()
+	})
 
 	for !kv.killed() {
 		select {

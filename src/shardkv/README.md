@@ -24,6 +24,10 @@
 
 在配置更改期间，一对组可能需要在它们之间双向移动分片。如果您看到死锁，这是一个可能的来源。
 
+## TODO
+
+- TestMissChange
+
 ## 参考资料
 
 - https://www.jianshu.com/p/f5c8ab9cd577
