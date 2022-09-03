@@ -12,7 +12,6 @@ import (
 	"pedrogao/distributed/labrpc"
 	"pedrogao/distributed/raft"
 
-	"github.com/pedrogao/common"
 	"github.com/pedrogao/log"
 )
 
@@ -79,11 +78,10 @@ type KVServer struct {
 	persister    *raft.Persister
 
 	// Your definitions here.
-	store        map[string]string       // kv存储
-	recordMap    map[int64]*clientRecord // 操作记录
-	notifyMap    map[int]chan *clientResp
-	lastApplied  int64 // 最后已应用 command
-	snapshotCond *common.Cond
+	store       map[string]string       // kv存储
+	recordMap   map[int64]*clientRecord // 操作记录
+	notifyMap   map[int]chan *clientResp
+	lastApplied int64 // 最后已应用 command
 }
 
 // Get 如果 kvserver 不是多数的一部分，则不应完成 Get() RPC（这样它就不会提供陈旧的数据）。
@@ -94,19 +92,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if kv.killed() {
 		reply.Err = ErrShutdown
 		return
-	}
-
-	// 快照期间，不接受请求，避免数据冲突
-	kv.mu.Lock()
-	var snapshotCond = kv.snapshotCond
-	kv.mu.Unlock()
-
-	if snapshotCond != nil {
-		_, ok := snapshotCond.WaitWithTimeout(defaultTimeout)
-		if !ok {
-			reply.Err = ErrTimeout
-			return
-		}
 	}
 
 	// submit op
@@ -155,19 +140,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if kv.killed() {
 		reply.Err = ErrShutdown
 		return
-	}
-
-	// 快照期间，不接受请求，避免数据冲突
-	kv.mu.Lock()
-	var snapshotCond = kv.snapshotCond
-	kv.mu.Unlock()
-
-	if snapshotCond != nil {
-		_, ok := snapshotCond.WaitWithTimeout(defaultTimeout)
-		if !ok {
-			reply.Err = ErrTimeout
-			return
-		}
 	}
 
 	kv.mu.Lock()
@@ -241,6 +213,12 @@ func (kv *KVServer) isLatestRequest(clientId, commandId int64) bool {
 }
 
 func (kv *KVServer) apply() {
+	defer func() {
+		for _, ce := range kv.notifyMap {
+			ce <- &clientResp{Err: ErrWrongLeader}
+		}
+	}()
+
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
@@ -303,7 +281,6 @@ func (kv *KVServer) apply() {
 						DPrintf("%d apply op successful, action: %+v, Resp: %+v ", kv.Me(), command.Action, resp)
 					}
 				}
-				kv.saveKV()
 				// leader回应客户端请求
 				term, isLeader := kv.rf.GetState()
 				// 任期相同，且是 leader 才需要通过对应的客户端
@@ -333,7 +310,6 @@ func (kv *KVServer) apply() {
 					continue
 				}
 				kv.mu.Lock()
-				kv.snapshotCond = common.NewCond()
 				DPrintf("%d request for snapshot, message: %+v ", kv.Me(), message)
 				if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex, message.Snapshot) {
 					DPrintf("%d request for snapshot successful, message: %+v ", kv.Me(), message)
@@ -345,9 +321,10 @@ func (kv *KVServer) apply() {
 					kv.store = store
 					kv.recordMap = recordMap
 					atomic.StoreInt64(&kv.lastApplied, int64(message.SnapshotIndex)) // 记录 lastApplied
-					kv.saveKV()
+					for _, ce := range kv.notifyMap {
+						ce <- &clientResp{Err: ErrWrongLeader}
+					}
 				}
-				kv.snapshotCond = nil
 				kv.mu.Unlock()
 			} else {
 				log.Fatalf("invalid message: %+v", message)
@@ -499,19 +476,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	data := persister.ReadKV()
+	data := persister.ReadSnapshot()
 	var (
-		store       map[string]string
-		recordMap   map[int64]*clientRecord
-		err         error
-		lastApplied int64
+		store     map[string]string
+		recordMap map[int64]*clientRecord
+		err       error
 	)
 	if len(data) > 0 {
-		lastApplied, store, recordMap, err = kv.decodeKV(data)
+		store, recordMap, err = kv.decodeSnapshot(data)
 	} else {
 		store = map[string]string{}
 		recordMap = map[int64]*clientRecord{}
-		lastApplied = 0
 	}
 
 	if err != nil {
@@ -519,7 +494,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}
 
 	kv.store = store
-	kv.lastApplied = lastApplied
+	kv.lastApplied = int64(kv.rf.LastIncludeIndex())
 	kv.recordMap = recordMap
 	kv.notifyMap = map[int]chan *clientResp{}
 	// apply & snapshot loop

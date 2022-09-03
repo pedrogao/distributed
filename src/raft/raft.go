@@ -355,6 +355,10 @@ func (rf *Raft) sendAppendLogs() {
 	}
 }
 
+func (rf *Raft) LastIncludeIndex() int {
+	return rf.log.LastIncludedIndex
+}
+
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 }
