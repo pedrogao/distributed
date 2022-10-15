@@ -6,20 +6,20 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"pedrogao/distributed/viewservice"
 
+	"github.com/pedrogao/common"
 	"github.com/pedrogao/log"
 )
 
 type PBServer struct {
 	mu         sync.Mutex
 	l          net.Listener
-	dead       int32 // for testing
-	unreliable int32 // for testing
+	dead       common.AtomicBool // for testing
+	unreliable common.AtomicBool // for testing
 	me         string
 	vs         *viewservice.Clerk
 
@@ -27,7 +27,7 @@ type PBServer struct {
 	view      viewservice.View  // 视图
 	kv        map[string]string // KV数据
 	oldBackup string            // 备份
-	alive     int32
+	alive     common.AtomicBool
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
@@ -37,7 +37,7 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	log.Infof("server get, args: %v, reply: %v", args, reply)
 	// 非主节点，或者节点已死亡，直接 err 返回
-	if pb.view.Primary != pb.me || atomic.LoadInt32(&pb.alive) == 1 {
+	if pb.view.Primary != pb.me || pb.alive.True() {
 		reply.Value = ""
 		reply.Err = ErrWrongServer
 		return nil
@@ -65,7 +65,7 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 	key := args.Key
 	value := args.Value
 	// 主节点
-	if pb.view.Primary != pb.me || atomic.LoadInt32(&pb.alive) == 1 {
+	if pb.view.Primary != pb.me || pb.alive.True() {
 		// not the primary
 		// 非主节点直接err
 		reply.Err = ErrWrongServer
@@ -157,11 +157,11 @@ func (pb *PBServer) tick() {
 	if ok != nil {
 		// view server 核心服务，视图服务都挂了，那么跟着挂
 		log.Debug("pbservice tick ping error:", pb.me, pb.view)
-		atomic.StoreInt32(&pb.alive, 1)
+		pb.alive.Set(true)
 		return
 	}
 	// ping 只要成功了，当前节点就可以存活
-	atomic.StoreInt32(&pb.alive, 0)
+	pb.alive.Set(false)
 	if !view.Equals(&pb.view) {
 		log.Debug("update view: ", pb.me, pb.view, view)
 		pb.view = view // 更新视图
@@ -192,7 +192,7 @@ func (pb *PBServer) tick() {
 // please do not change this function.
 func (pb *PBServer) kill() {
 	log.Debugf("PBServer me: %s killed", pb.me)
-	atomic.StoreInt32(&pb.dead, 1)
+	pb.dead.Set(true)
 	pb.l.Close()
 }
 
@@ -224,14 +224,14 @@ func StartServer(vshost string, me string) *PBServer {
 	// please do not change any of the following code,
 	// or do anything to subvert it.
 	go func(pb *PBServer) {
-		for atomic.LoadInt32(&pb.dead) == 0 {
+		for !pb.dead.True() {
 			log.Debugf("Server: %s still alive, dead: %v", pb.me, pb.dead)
 			conn, err := pb.l.Accept()
-			if err == nil && atomic.LoadInt32(&pb.dead) == 0 {
-				if atomic.LoadInt32(&pb.unreliable) == 1 && (rand.Int63()%1000) < 100 {
+			if err == nil && !pb.dead.True() {
+				if pb.unreliable.True() && (rand.Int63()%1000) < 100 {
 					// discard the request. 直接关闭请求
 					conn.Close()
-				} else if atomic.LoadInt32(&pb.unreliable) == 1 && (rand.Int63()%1000) < 200 {
+				} else if pb.unreliable.True() && (rand.Int63()%1000) < 200 {
 					// process the request but force discard of reply.
 					// 处理请求，但不回复
 					c1 := conn.(*net.UnixConn)
@@ -247,7 +247,7 @@ func StartServer(vshost string, me string) *PBServer {
 			} else if err == nil {
 				conn.Close()
 			}
-			if err != nil && atomic.LoadInt32(&pb.dead) == 0 {
+			if err != nil && !pb.dead.True() {
 				log.Debugf("PBServer(%v) accept: %v\n", me, err.Error())
 				pb.kill()
 			}
@@ -255,7 +255,7 @@ func StartServer(vshost string, me string) *PBServer {
 	}(pb)
 
 	go func(pb *PBServer) {
-		for atomic.LoadInt32(&pb.dead) == 0 {
+		for !pb.dead.True() {
 			pb.tick() // tick loop
 			time.Sleep(viewservice.PingInterval)
 		}

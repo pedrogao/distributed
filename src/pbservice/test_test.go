@@ -354,7 +354,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 	var sa [nservers]*PBServer
 	for i := 0; i < nservers; i++ {
 		sa[i] = StartServer(vshost, port(tag, i+1))
-		atomic.StoreInt32(&sa[i].unreliable, 1)
+		sa[i].unreliable.Set(true)
 	}
 
 	for iters := 0; iters < viewservice.DeadPings*2; iters++ {
@@ -557,7 +557,7 @@ func TestRepeatedCrashUnreliable(t *testing.T) {
 	var sa [nservers]*PBServer
 	for i := 0; i < nservers; i++ {
 		sa[i] = StartServer(vshost, port(tag, i+1))
-		atomic.StoreInt32(&sa[i].unreliable, 1)
+		sa[i].unreliable.Set(true)
 	}
 
 	for i := 0; i < viewservice.DeadPings; i++ {
